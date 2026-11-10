@@ -169,7 +169,7 @@ final class VNCTests: XCTestCase {
         shot(app, "vnc-clipboard")
         app.buttons["vnc-clipboard"].tap()
         app.buttons["只放进 Mac 的剪贴板"].firstMatch.tap()
-        allowPaste(app)
+        _ = answerPaste(app, allow: true)
         rest()
         seen = try mockState()
         XCTAssertEqual(seen["clipboard"] as? String, "copied on the Mac", "back on the Mac:\n\(app.debugDescription)")
@@ -531,20 +531,24 @@ final class VNCTests: XCTestCase {
         }
         shot(app, "vnc-pasted")
 
-        // Another app's text: pasted when Allow Paste is tapped; refused, it says why, and nothing goes to the Mac.
-        try mock(hub!, "/mock/screen-password?clear=1")
+        // Another app's text: iOS asks first (Allow Paste) and the page keeps going meanwhile. Refused, the page says why
+        // and nothing goes to the Mac; allowed, it is pasted. (Simulators before iOS 27 refused without asking.)
+        let pasted = app.staticTexts["已粘贴到 MacBook"]
+        let refused = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "读不到这台 iPhone 的剪贴板")).firstMatch
+        XCTAssertTrue(pasted.waitForNonExistence(timeout: 15), "the last paste's toast has gone")
         UIPasteboard.general.string = "copied in another app"
-        app.buttons["vnc-clipboard"].tap()
-        app.buttons["从 iPhone 粘贴"].firstMatch.tap()
-        let pasted = app.staticTexts["已粘贴到 MacBook"], refused = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "读不到这台 iPhone 的剪贴板")).firstMatch
-        let either = NSPredicate { _, _ in pasted.exists || refused.exists }
-        // The simulators refuse at once; a device asks first.
-        if XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: either, object: nil)], timeout: 2) != .completed { allowPaste(app) }
-        XCTAssertEqual(XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: either, object: nil)], timeout: 10), .completed,
-                       "pasted, or why not (never “no text”):\n\(app.debugDescription)")
-        let clipboard = try mockState()["clipboard"] as? String
-        XCTAssertEqual(clipboard, pasted.exists ? "copied in another app" : "", "the Mac's clipboard")
-        shot(app, "vnc-paste-refused")
+        for allow in [false, true] {
+            try mock(hub!, "/mock/screen-password?clear=1")
+            app.buttons["vnc-clipboard"].tap()
+            app.buttons["从 iPhone 粘贴"].firstMatch.tap()
+            let asked = answerPaste(app, allow: allow)
+            let toast = allow && asked ? pasted : refused
+            XCTAssertTrue(toast.waitForExistence(timeout: 10), "allow \(allow), asked \(asked): pasted, or why not (never “no text”):\n\(app.debugDescription)")
+            let clipboard = try mockState()["clipboard"] as? String
+            XCTAssertEqual(clipboard, allow && asked ? "copied in another app" : "", "allow \(allow): the Mac's clipboard")
+            shot(app, allow ? "vnc-paste-allowed" : "vnc-paste-refused")
+            XCTAssertTrue(toast.waitForNonExistence(timeout: 15))
+        }
     }
 
     /// The Mac's pointer reads over black, white, gray and a dark terminal (#3075), against a second mock started with
@@ -583,13 +587,19 @@ final class VNCTests: XCTestCase {
         return false
     }
 
-    /// iOS asks before the app reads what another app (here the test runner) copied: Allow Paste.
-    @MainActor private func allowPaste(_ app: XCUIApplication) {
-        let allow = NSPredicate(format: "label IN %@", ["允许粘贴", "Allow Paste"])
-        for owner in [app, XCUIApplication(bundleIdentifier: "com.apple.springboard")] {
-            let b = owner.buttons.matching(allow).firstMatch
-            if b.waitForExistence(timeout: 3) { b.tap(); return }
+    /// iOS asks before the app reads what another app (here the test runner) copied. Answers Allow Paste or Don't Allow
+    /// Paste if it asks, and says whether it did. The question is the system's (SpringBoard), looked for in the app too.
+    @MainActor private func answerPaste(_ app: XCUIApplication, allow: Bool) -> Bool {
+        for owner in [XCUIApplication(bundleIdentifier: "com.apple.springboard"), app] {
+            let yes = owner.buttons.matching(NSPredicate(format: "label IN %@", ["允许粘贴", "Allow Paste"])).firstMatch
+            guard yes.waitForExistence(timeout: 3) else { continue }
+            if allow { yes.tap(); return true }
+            let no = owner.buttons.matching(NSPredicate(format: "label CONTAINS %@ OR label BEGINSWITH %@", "不允许", "Don")).firstMatch
+            XCTAssertTrue(no.exists, "Don't Allow Paste next to Allow Paste:\n\(owner.debugDescription)")
+            if no.exists { no.tap() }
+            return true
         }
+        return false
     }
 
     private func rest(_ seconds: UInt32 = 1) { sleep(pause > 0 ? seconds * pause : (seconds > 1 ? 1 : 0)); usleep(300_000) }

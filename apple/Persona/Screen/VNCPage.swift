@@ -402,7 +402,9 @@ struct VNCPage: View {
 
     private func pasteFromPhone(andPaste: Bool) async {
         #if os(iOS) || os(visionOS)
-        let text = UIPasteboard.general.string
+        // Off the main thread: when iOS asks Allow Paste, the read waits for the answer, and the picture and the session
+        // must keep going meanwhile (#3075).
+        let text = await Task.detached { UIPasteboard.general.string }.value
         // Text there that iOS would not hand over (Allow Paste not tapped, or not allowed in Settings): say so, not
         // that there is none (#3075).
         if text == nil, UIPasteboard.general.hasStrings {
