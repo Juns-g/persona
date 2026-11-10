@@ -45,13 +45,17 @@ nonisolated final class RFBReader: @unchecked Sendable {
     private let transport: RFBTransport
     private var buffer: [UInt8] = []
     private var at = 0
+    /// Every byte that came so far.
+    private(set) var received = 0
 
     init(_ transport: RFBTransport) { self.transport = transport }
 
     func bytes(_ n: Int) async throws -> [UInt8] {
         while buffer.count - at < n {
             let more = try await transport.receive()
-            if at > 0 {
+            received += more.count
+            // What was read goes once it is all of the buffer or a good part of it, not on every message.
+            if at > 0, at == buffer.count || at >= 1 << 16 {
                 buffer.removeFirst(at)
                 at = 0
             }
@@ -68,6 +72,80 @@ nonisolated final class RFBReader: @unchecked Sendable {
         return UInt32(b[0]) << 24 | UInt32(b[1]) << 16 | UInt32(b[2]) << 8 | UInt32(b[3])
     }
     func s32() async throws -> Int32 { Int32(bitPattern: try await u32()) }
+}
+
+/// What the client sends from the handshake's end on, in order, one at a time (RFBClient). A pointer event that only
+/// moves (its buttons as the event before it had) replaces one still waiting that only moved too: when the way to the
+/// Mac stalls, the pointer goes straight to where the finger is instead of replaying the path, while presses, releases
+/// and wheel notches all go, where they were made.
+nonisolated final class RFBOutbox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var queue: [(bytes: [UInt8], motion: Bool)] = []
+    private var waiter: CheckedContinuation<[UInt8]?, Never>?
+    private var finished = false
+    /// The one task that takes messages was cancelled: it takes no more.
+    private var cancelled = false
+    /// The buttons of the last pointer event queued (sent or not).
+    private var buttons: UInt8?
+
+    func send(_ bytes: [UInt8]) {
+        let k: CheckedContinuation<[UInt8]?, Never>? = lock.withLock {
+            guard !finished else { return nil }
+            var motion = false
+            if bytes.count == 6, bytes[0] == 5 {
+                motion = bytes[1] == buttons
+                buttons = bytes[1]
+                if motion, let last = queue.last, last.motion, last.bytes[1] == bytes[1] {
+                    queue[queue.count - 1].bytes = bytes
+                    return nil
+                }
+            }
+            if let w = waiter {
+                waiter = nil
+                return w
+            }
+            queue.append((bytes, motion))
+            return nil
+        }
+        k?.resume(returning: bytes)
+    }
+
+    /// The next message, waiting for one; nil once finished, or once the task waiting is cancelled (the client's
+    /// task group ends with its reader: the sending task must end too).
+    func next() async -> [UInt8]? {
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { k in
+                let now: [UInt8]?? = lock.withLock {
+                    if !queue.isEmpty { return .some(queue.removeFirst().bytes) }
+                    if finished || cancelled { return .some(nil) }
+                    waiter = k
+                    return nil
+                }
+                if let now { k.resume(returning: now) }
+            }
+        } onCancel: {
+            let k: CheckedContinuation<[UInt8]?, Never>? = lock.withLock {
+                cancelled = true
+                defer { waiter = nil }
+                return waiter
+            }
+            k?.resume(returning: nil)
+        }
+    }
+
+    /// Waiting messages are dropped, and next answers nil from now on.
+    func finish() {
+        let k: CheckedContinuation<[UInt8]?, Never>? = lock.withLock {
+            finished = true
+            queue = []
+            defer { waiter = nil }
+            return waiter
+        }
+        k?.resume(returning: nil)
+    }
+
+    /// Messages waiting (tests).
+    var waiting: [[UInt8]] { lock.withLock { queue.map(\.bytes) } }
 }
 
 /// The native client of a Mac's Screen Sharing (#1343): RFB 3.8 signed in with Apple Remote Desktop's account and
@@ -112,15 +190,30 @@ nonisolated final class RFBClient: @unchecked Sendable {
     private let reader: RFBReader
     private let credentials: @Sendable () async -> Credentials?
     private(set) var framebuffer = RFBFramebuffer(width: 1, height: 1)
+    /// The server pushes updates without being asked (ContinuousUpdates, once it said EndOfContinuousUpdates).
+    private var continuous = false
     /// Held while an update writes the framebuffer: whoever copies it out takes it too (withFramebuffer).
     private let framebufferLock = NSLock()
 
     /// The framebuffer as it is between two writes (a frame copied out, at its own pace).
     func withFramebuffer<T>(_ body: (RFBFramebuffer) -> T) -> T { framebufferLock.withLock { body(framebuffer) } }
+    /// The framebuffer with what changed since the last call (all of it after a new size): a frame copied out of the
+    /// parts that need it. The damage starts again empty.
+    func withDamage<T>(_ body: (RFBFramebuffer, RFBRegion) -> T) -> T {
+        framebufferLock.withLock {
+            let d = damage
+            damage = RFBRegion()
+            return body(framebuffer, d)
+        }
+    }
+    /// What changed since withDamage last took it; framebufferLock guards it.
+    private var damage = RFBRegion()
     private let zrle = RFBZRLE()
     private var task: Task<Void, Never>?
     /// The pointer, keys and clipboard, sent one after another in the order they came (from the handshake's end on).
-    private let outbox = AsyncStream<[UInt8]>.makeStream(of: [UInt8].self)
+    let outbox = RFBOutbox()
+    /// Bytes that came from the Mac so far (the page's numbers in DEBUG builds).
+    var received: Int { reader.received }
 
     var onState: @Sendable (State) -> Void = { _ in }
     /// After each update: the framebuffer, and the part of it that changed.
@@ -147,7 +240,7 @@ nonisolated final class RFBClient: @unchecked Sendable {
             do {
                 try await handshake()
                 try await withThrowingTaskGroup(of: Void.self) { g in
-                    g.addTask { [self] in for await m in outbox.stream { try await transport.send(m) } }
+                    g.addTask { [self] in while let m = await outbox.next() { try await transport.send(m) } }
                     g.addTask { [self] in try await run() }
                     try await g.next()
                     g.cancelAll()
@@ -163,7 +256,7 @@ nonisolated final class RFBClient: @unchecked Sendable {
 
     func close() {
         task?.cancel()
-        outbox.continuation.finish()
+        outbox.finish()
         transport.close()
         onState(.closed)
     }
@@ -194,7 +287,7 @@ nonisolated final class RFBClient: @unchecked Sendable {
         send([3, 0, 0, 0, 0, 0, UInt8(w >> 8), UInt8(w & 0xff), UInt8(h >> 8), UInt8(h & 0xff)])
     }
 
-    private func send(_ bytes: [UInt8]) { outbox.continuation.yield(bytes) }
+    private func send(_ bytes: [UInt8]) { outbox.send(bytes) }
 
     // MARK: In
 
@@ -219,7 +312,10 @@ nonisolated final class RFBClient: @unchecked Sendable {
         let width = try await reader.u16(), height = try await reader.u16()
         _ = try await reader.bytes(16) // its pixel format: the client asks for its own next
         let name = String(decoding: try await reader.bytes(Int(try await reader.u32())), as: UTF8.self)
-        framebufferLock.withLock { framebuffer = RFBFramebuffer(width: width, height: height) }
+        framebufferLock.withLock {
+            framebuffer = RFBFramebuffer(width: width, height: height)
+            damage = RFBRegion(CGRect(x: 0, y: 0, width: width, height: height))
+        }
         // SetPixelFormat: 32 bits, depth 24, little-endian, true colour, 8 bits each, red at 16, green 8, blue 0.
         try await transport.send([0, 0, 0, 0, 32, 24, 0, 1, 0, 255, 0, 255, 0, 255, 16, 8, 0, 0, 0, 0])
         var setEncodings: [UInt8] = [2, 0, 0, UInt8(Self.encodings.count)]
@@ -282,6 +378,13 @@ nonisolated final class RFBClient: @unchecked Sendable {
                 let n = Int(try await reader.u32())
                 let text = try await reader.bytes(n)
                 onCutText(String(text.map { Character(Unicode.Scalar($0)) }))
+            case 150: // EndOfContinuousUpdates: the server can push updates (asked with -313)
+                continuous = true
+            case 248: // Fence (asked with -312): a request is answered with the flags understood (none) and its data
+                _ = try await reader.bytes(3)
+                let flags = try await reader.u32()
+                let data = try await reader.bytes(Int(try await reader.u8()))
+                if flags & 0x8000_0000 != 0 { send([248, 0, 0, 0] + RFBAuth.be32(0) + [UInt8(data.count)] + data) }
             case let t: throw Failure.protocolError(String(localized: "Unknown message \(t)"))
             }
         }
@@ -290,6 +393,10 @@ nonisolated final class RFBClient: @unchecked Sendable {
     private func update() async throws {
         _ = try await reader.bytes(1)
         let count = try await reader.u16()
+        // The next update asked for now, before this one is read and drawn: the Mac gathers it meanwhile, instead of
+        // waiting for this one to cross the network, be drawn and the request to cross back.
+        let size = (framebuffer.width, framebuffer.height)
+        try await request(incremental: true)
         var dirty = CGRect.null
         for _ in 0..<count {
             let x = try await reader.u16(), y = try await reader.u16(), w = try await reader.u16(), h = try await reader.u16()
@@ -306,7 +413,7 @@ nonisolated final class RFBClient: @unchecked Sendable {
                 let tiles = try zrle.inflate(compressed)
                 try framebufferLock.withLock { try zrle.draw(tiles, x: x, y: y, w: w, h: h, into: framebuffer) }
             case -223:
-                framebufferLock.withLock { framebuffer.resize(width: w, height: h) }
+                resize(width: w, height: h)
                 onResize(w, h)
                 dirty = CGRect(x: 0, y: 0, width: w, height: h)
                 continue
@@ -316,7 +423,7 @@ nonisolated final class RFBClient: @unchecked Sendable {
                 let screens = try await extendedScreens()
                 guard y == 0 else { continue }
                 if w != framebuffer.width || h != framebuffer.height {
-                    framebufferLock.withLock { framebuffer.resize(width: w, height: h) }
+                    resize(width: w, height: h)
                     onResize(w, h)
                     dirty = CGRect(x: 0, y: 0, width: w, height: h)
                 }
@@ -332,10 +439,20 @@ nonisolated final class RFBClient: @unchecked Sendable {
                 throw Failure.protocolError(String(localized: "Unknown encoding \(encoding)"))
             }
             if encoding == -224 { break }
-            dirty = dirty.union(CGRect(x: x, y: y, width: w, height: h))
+            let r = CGRect(x: x, y: y, width: w, height: h)
+            dirty = dirty.union(r)
+            framebufferLock.withLock { damage.add(r) }
         }
         if !dirty.isNull { onFrame(framebuffer, dirty) }
-        try await request(incremental: true)
+        // A new size since the request went out: that one covers the old size only, so the whole new one again.
+        if size != (framebuffer.width, framebuffer.height) { try await request(incremental: false) }
+    }
+
+    private func resize(width: Int, height: Int) {
+        framebufferLock.withLock {
+            framebuffer.resize(width: width, height: height)
+            damage = RFBRegion(CGRect(x: 0, y: 0, width: width, height: height))
+        }
     }
 
     /// ExtendedDesktopSize's screens: a count, three bytes of padding, then id, x, y, width, height and flags for each.
