@@ -390,6 +390,25 @@ final class VNCTests: XCTestCase {
         app.buttons["关闭"].firstMatch.tap()
     }
 
+    /// At the largest text size the row has no room for Picture in Picture next to Close (#3075): it goes back into ⋯,
+    /// and every button of both bars stays on the screen.
+    @MainActor func testPictureInPictureInMoreAtTheLargestText() throws {
+        let (app, _) = try signedInMachinePage(["-showPiPSource", "YES", "-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"])
+        let more = app.buttons["vnc-more"].firstMatch
+        XCTAssertTrue(more.waitForExistence(timeout: 10), "no ⋯:\n\(app.debugDescription)")
+        let width = app.windows.firstMatch.frame.width
+        for id in ["screen-close", "vnc-help", "vnc-more", "vnc-clipboard", "vnc-keyboard"] {
+            let f = app.buttons[id].firstMatch.frame
+            XCTAssertTrue(f.minX >= 0 && f.maxX <= width, "\(id) on the screen: \(f), the screen \(width) wide")
+        }
+        XCTAssertFalse(app.buttons["vnc-pip"].exists, "no room next to Close:\n\(app.debugDescription)")
+        rest()
+        shot(app, "vnc-pip-in-more")
+        more.tap()
+        XCTAssertTrue(app.buttons["小窗"].firstMatch.waitForExistence(timeout: 5), "in ⋯:\n\(app.debugDescription)")
+        shot(app, "vnc-pip-in-more-menu")
+    }
+
     /// On its side (#3075): the page turns to either landscape, the picture takes the height between two rails of buttons
     /// inside the safe area (Close then Picture in Picture down the leading one), and a tap lands on the Mac where the
     /// finger is. Upright again and closed, the app stays upright when the phone turns.

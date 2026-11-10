@@ -152,21 +152,35 @@ struct VNCPage: View {
         }
     }
 
-    private var topBar: some View {
+    @ViewBuilder private var topBar: some View {
+        #if os(iOS)
+        // Picture in Picture right of Close (#3075), a tap away; in ⋯ as before where the row would run off the screen
+        // (the largest text sizes). Down a rail there is room for it.
+        if VNCPiP.supported, !railed {
+            ViewThatFits(in: .horizontal) {
+                topRow(pipButton: true)
+                topRow(pipButton: false)
+            }
+        } else {
+            topRow(pipButton: VNCPiP.supported)
+        }
+        #else
+        topRow(pipButton: false)
+        #endif
+    }
+
+    private func topRow(pipButton: Bool) -> some View {
         bar(spacing: Theme.Space.s) {
             Button { close() } label: { barIcon(Theme.Icon.close) }
             .themedButton()
             .accessibilityLabel("Close Screen")
             .accessibilityIdentifier("screen-close")
-            #if os(iOS)
-            // Right of Close (#3075): the small window a tap away, not inside ⋯.
-            if VNCPiP.supported {
+            if pipButton {
                 Button { toPictureInPicture() } label: { barIcon(Theme.Icon.pictureInPicture) }
                     .themedButton()
                     .accessibilityLabel("Picture in Picture")
                     .accessibilityIdentifier("vnc-pip")
             }
-            #endif
             Spacer(minLength: Theme.Space.s)
             if railed {
                 // No room for the name down a rail: the dot, with the name and the phase for VoiceOver.
@@ -183,13 +197,17 @@ struct VNCPage: View {
                 }
                 .accessibilityElement(children: .combine)
                 .accessibilityIdentifier("screen-phase")
+                // Whatever the buttons leave, not a third of it beside the two spacers; and when the row is measured
+                // (`ViewThatFits`), a tap target's width: a long name is cut short, it does not move a button into ⋯.
+                .frame(idealWidth: Theme.Size.tapTarget)
+                .layoutPriority(1)
             }
             Spacer(minLength: Theme.Space.s)
             Button { help = true } label: { barIcon(Theme.Icon.help) }
                 .themedButton()
                 .accessibilityLabel("Help")
                 .accessibilityIdentifier("vnc-help")
-            moreMenu
+            moreMenu(pipItem: !pipButton)
         }
     }
 
@@ -199,7 +217,7 @@ struct VNCPage: View {
         ThemedIcon(name).font(Theme.Font.labelStrong).scaledFrame(width: Theme.Size.icon, height: Theme.Size.icon)
     }
 
-    private var moreMenu: some View {
+    private func moreMenu(pipItem: Bool) -> some View {
         Menu {
             #if os(iOS) || os(visionOS)
             // On the Mac updateNSView never reads the mode; the picker would only change the iPhone's setting (#3893).
@@ -223,7 +241,10 @@ struct VNCPage: View {
             #endif
             Button { centerPointer() } label: { Label("Center Pointer", systemImage: Theme.Icon.pointerCenter) }
             #if os(iOS)
-            // Picture in Picture itself is the button right of Close.
+            // Picture in Picture itself is the button right of Close, here only when the row has no room for it.
+            if pipItem, VNCPiP.supported {
+                Button { toPictureInPicture() } label: { Label("Picture in Picture", systemImage: Theme.Icon.pictureInPicture) }
+            }
             Button { pipLog = true } label: { Label("Picture in Picture Diagnostics", systemImage: Theme.Icon.help) }
             #elseif os(visionOS)
             if VNCPiP.supported {
