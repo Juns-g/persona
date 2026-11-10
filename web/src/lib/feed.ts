@@ -9,7 +9,7 @@ import { getState, onHubEvent, putTodo, refreshTodos } from "./store";
 import { applySnapshot } from "./assistant-views";
 import type { AssistantView, ViewAction } from "./extension-wire";
 import { isResumed } from "./reconnect";
-import { deleteTodo, type Todo } from "./todos";
+import { deleteTodo, type Todo, type TodoAsk } from "./todos";
 import { getInbox, itemPath } from "./inbox";
 import { conversationManager, itemHeaders } from "./manager-choice";
 import { closePanel, getPanel } from "./panel";
@@ -87,7 +87,7 @@ export interface BriefRow {
   /** accept: the verdict line, word for word as the Lark card says it (#1226), in the bot's language; a hub from before leaves it out. */
   verdict?: string;
   /** accept: a conclusion's verdict (left out for a deployed task); decide waits for the user's decision, and Accept takes `recommend`. */
-  outcome?: "done" | "cannot" | "decide";
+  outcome?: TodoAsk["outcome"];
   recommend?: string;
 }
 
@@ -423,7 +423,7 @@ onHubEvent("task_plan", (m) => {
 /** The fields of a plan's task "Edit" lets the user change before it starts (iOS PlanEditSheet), ultracode included (#12). */
 export type PlanTaskEdit = Pick<PlanTask, "title" | "machine" | "cwd" | "model" | "permission" | "prompt"> & { ultracode: boolean };
 
-export const PLAN_PERMISSIONS = ["default", "acceptEdits", "plan", "bypassPermissions"] as const;
+export const PLAN_PERMISSIONS = ["default", "acceptEdits", "plan", "auto", "bypassPermissions"] as const;
 
 /** A plan's tasks as "Edit" starts them: every editable field filled in (an unset permission is "Ask every step").
  *  `ultracode`: the card's own choice per task, where it has one; else the assistant's. */

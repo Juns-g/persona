@@ -300,6 +300,7 @@ func RenderSnapshotWorkflow(w SnapshotWorkflow) string {
 // saying so first (assistant/context). Node puts what changed of it at the start of each message (TurnContext).
 type AssistantContext struct {
 	Main     bool
+	Leader   bool // a leader conversation (#3133): it supervises the tasks it hands out
 	Owner    string
 	Snapshot string
 }
@@ -407,6 +408,10 @@ type AskTodoAnswer struct {
 	Thread    bool
 	Dropped   bool
 	Several   bool // more than one question was asked
+	// Defaulted: nobody decided by the question's deadline (Deadline, MM-DD HH:MM) and it could be undone, so its
+	// recommended options were taken by default (#3127).
+	Defaulted bool
+	Deadline  string
 }
 
 // AskTodoChoice is one call of the user's: the question as they wrote it ("" for a reply in the topic), the choice, why.
@@ -423,14 +428,19 @@ func RenderAskTodoAnswer(a AskTodoAnswer) string { return render("assistant/ask_
 type Supervise struct {
 	Level   string
 	Entries []SuperviseEntry
+	// Leader: it goes to a leader conversation, for the tasks it handed out (#3133); Escalated: an entry is a leader's
+	// needs_user, told the main conversation.
+	Leader, Escalated bool
 }
 
-// SuperviseEntry is one task in it, with what happened (Kind: review, idle, needs_you, stalled, interrupted, failed).
+// SuperviseEntry is one task in it, with what happened (Kind: review, idle, needs_you, stalled, interrupted, failed,
+// started, escalated).
 type SuperviseEntry struct {
 	ID, Title, Kind string
 	Detail          string             // why: the judge's reason, the step it is stuck on, the model service's error, why it did not start
 	Minutes         int                // how long it has waited (needs_you) or not moved (stalled)
 	Ask             string             // needs_you: what it asks
+	Recommend       string             // escalated: the option the leader recommends
 	DoneWhen        []string           // what done means
 	Round           int                // reworks so far
 	Machine         string             // where its agent runs (a name)
@@ -445,6 +455,10 @@ type SuperviseEntry struct {
 	Said        string
 	Evidence    []string
 	Step, Steps int
+	// failed with its tab kept (#2570): until when (local "15:04"), the question its shell waits on, the tab's last
+	// lines, and how many retries are left; KeptUntil "" when the start failed for good.
+	KeptUntil, Question, Screen string
+	RetriesLeft                 int
 }
 
 func RenderSupervise(s Supervise) string { return render("assistant/supervise", s) }
