@@ -94,7 +94,8 @@ final class CodexCardsTests: XCTestCase {
         XCTAssertFalse(anything(app, "Codex 需要你授权").exists, "the approval card is gone")
 
         XCTAssertTrue(anything(app, "订单列表的索引怎么加？").exists)
-        XCTAssertTrue(anything(app, "索引 · 1/2").exists, "header and progress")
+        // Several questions (#2970): capsules say how many, how many answered and which one this is.
+        XCTAssertTrue(anything(app, "共 2 个问题，已答 0 个，当前第 1 个").exists, "the steps say where it is")
         shot("question")
         anything(app, "只给 user_id 加索引").tap()
         XCTAssertTrue(anything(app, "改完以后怎么验证？").waitForExistence(timeout: 5))
@@ -102,6 +103,13 @@ final class CodexCardsTests: XCTestCase {
         app.typeText("先在本地跑基准测试")
         shot("question-2")
         app.buttons["提交"].tap()
+        // The answers are reviewed before they go.
+        let review = app.buttons["screen-review-submit"]
+        XCTAssertTrue(review.waitForExistence(timeout: 5), "no review before the answers go:\n\(app.debugDescription)")
+        XCTAssertTrue(anything(app, "只给 user_id 加索引").exists && anything(app, "先在本地跑基准测试").exists, "the review shows the answers")
+        XCTAssertFalse(resolved(hub).contains { $0["id"] as? String == "cxq_orders_plan" }, "sent before the review")
+        shot("question-review")
+        review.tap()
         let deadline = Date().addingTimeInterval(10)
         var answers: [String: Any]?
         while answers == nil, Date() < deadline {
@@ -155,6 +163,65 @@ final class CodexCardsTests: XCTestCase {
         XCTAssertTrue(anything(app, "over the network").exists, "Codex's reason")
         XCTAssertTrue(anything(app, "Codex 在问你").exists)
         shot("beautiful")
+    }
+
+    /// BeautifulUI (#2970): a question skipped with ↓ shows in the review as not answered; its button goes back to it with
+    /// the other answer kept, and the answers go from the review.
+    @MainActor func testBeautifulUIReviewsASkippedQuestion() throws {
+        let hub = try hub()
+        _ = try? Data(contentsOf: URL(string: hub + "/mock/reset")!)
+        // The approval out of the way (the mock refuses its first answer): only the question is left.
+        for _ in 0..<2 { post(hub + "/api/v1/interactions/cxa_orders_curl/resolve", ["allow": true]) }
+        addUIInterruptionMonitor(withDescription: "system alert") { alert in
+            for label in ["Allow", "允许", "OK", "好"] where alert.buttons[label].exists {
+                alert.buttons[label].tap()
+                return true
+            }
+            return false
+        }
+        let app = XCUIApplication()
+        let pair = "persona://pair?url=" + hub.addingPercentEncoding(withAllowedCharacters: .alphanumerics)! + "&token=mock"
+        app.launchArguments = ["-pairURL", pair, "-openSession", orders, "-ui.style", "beautiful"]
+        app.launchPersona()
+        XCTAssertTrue(anything(app, "订单列表的索引怎么加？").waitForExistence(timeout: 20), app.debugDescription)
+        nudge(app)
+        app.buttons["Next question"].firstMatch.tap()
+        XCTAssertTrue(anything(app, "改完以后怎么验证？").waitForExistence(timeout: 5), "↓ did not skip")
+        anything(app, "预发环境压测").tap()
+        let goAnswer = app.buttons["screen-review-answer"]
+        if !goAnswer.waitForExistence(timeout: 2) { app.buttons["提交"].firstMatch.tap() }
+        XCTAssertTrue(goAnswer.waitForExistence(timeout: 5), "no review with the skipped question:\n\(app.debugDescription)")
+        XCTAssertTrue(anything(app, "未回答").exists, "the skipped question is not marked")
+        XCTAssertFalse(resolved(hub).contains { $0["id"] as? String == "cxq_orders_plan" }, "sent before the review")
+        shot("beautiful-review-skipped")
+        goAnswer.tap()
+        XCTAssertTrue(anything(app, "订单列表的索引怎么加？").waitForExistence(timeout: 5), "did not go back to the skipped question")
+        anything(app, "只给 user_id 加索引").tap()
+        XCTAssertTrue(anything(app, "改完以后怎么验证？").waitForExistence(timeout: 5))
+        let submit = app.buttons["screen-review-submit"]
+        if !submit.waitForExistence(timeout: 2) { app.buttons["提交"].firstMatch.tap() }
+        XCTAssertTrue(submit.waitForExistence(timeout: 5), "no review after the last answer")
+        shot("beautiful-review")
+        submit.tap()
+        let deadline = Date().addingTimeInterval(10)
+        var answers: [String: Any]?
+        while answers == nil, Date() < deadline {
+            answers = (resolved(hub).first { $0["id"] as? String == "cxq_orders_plan" }?["resolution"] as? [String: Any])?["answers"] as? [String: Any]
+            if answers == nil { usleep(300_000) }
+        }
+        XCTAssertEqual(answers?["订单列表的索引怎么加？"] as? String, "只给 user_id 加索引")
+        XCTAssertEqual(answers?["改完以后怎么验证？"] as? String, "预发环境压测")
+    }
+
+    private func post(_ url: String, _ body: [String: Any]) {
+        var req = URLRequest(url: URL(string: url)!)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue("Bearer mock", forHTTPHeaderField: "Authorization")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        let done = DispatchSemaphore(value: 0)
+        URLSession.shared.dataTask(with: req) { _, _, _ in done.signal() }.resume()
+        _ = done.wait(timeout: .now() + 5)
     }
 
     /// Session Info says how Persona reaches this Codex: its app-server, or the terminal and why (TEST_RUNNER_PERSONA_CODEX_ROUTE

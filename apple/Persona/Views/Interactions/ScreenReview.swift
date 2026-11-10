@@ -127,7 +127,8 @@ struct ScreenReview: View {
             Button { answer(missing) } label: {
                 HStack(spacing: Theme.Space.sm) {
                     if sending == "walk" { ProgressView().controlSize(.small).tint(.white) }
-                    Text("Answer “\(missing.label)”").lineLimit(1)
+                    Text(missing.label.isEmpty ? String(localized: "Answer Question \(missing.index + 1)") : String(localized: "Answer “\(missing.label)”"))
+                        .lineLimit(1)
                 }
                 .padding(.horizontal, Theme.Space.s)
                 .frame(maxWidth: wide ? .infinity : nil)

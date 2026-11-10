@@ -421,9 +421,12 @@ struct QuestionForm: View {
     @State private var page = 0
     @State private var sending = false
     @State private var writing = false
+    /// Several questions (#2970): the review shown before the answers go.
+    @State private var reviewing = false
     @FocusState private var otherFocused: Bool
 
     private var questions: [Question] { interaction.questions ?? [] }
+    private var stepped: Bool { QuestionSteps.enabled(questions) }
 
     var body: some View {
         if AppStyle.current.usesBeautifulUI { BUIQuestionForm(interaction: interaction) } else { plain }
@@ -432,9 +435,21 @@ struct QuestionForm: View {
     @ViewBuilder private var plain: some View {
         VStack(alignment: .leading, spacing: Theme.Space.m) {
             DelegateNotes(interaction: interaction)
-            if questions.indices.contains(page) {
+            if stepped {
+                ScreenSteps(steps: QuestionSteps.steps(questions) { answer(questions[$0]) != nil }, current: reviewing ? nil : page)
+            }
+            if stepped, reviewing {
+                ScreenReview(rows: QuestionSteps.rows(questions, answers: shownAnswers), sending: sending ? "submit" : nil,
+                             back: { withAnimation(Theme.Motion.standard) { reviewing = false } },
+                             submit: { send() })
+            } else if questions.indices.contains(page) {
                 let q = questions[page]
-                if questions.count > 1 || q.header != nil || q.multiSelect {
+                if stepped {
+                    // The capsules carry the header and where it is.
+                    if q.multiSelect {
+                        Text("Select multiple").font(Theme.Font.labelStrong).foregroundStyle(.secondary)
+                    }
+                } else if questions.count > 1 || q.header != nil || q.multiSelect {
                     Text([q.header.flatMap { $0.isEmpty ? nil : $0 },
                           questions.count > 1 ? "\(page + 1)/\(questions.count)" : nil,
                           q.multiSelect ? String(localized: "Select multiple") : nil].compactMap { $0 }.joined(separator: " · "))
@@ -449,7 +464,7 @@ struct QuestionForm: View {
                     .id(page)
                     .transition(.asymmetric(insertion: .move(edge: .trailing).combined(with: .opacity), removal: .opacity))
             }
-            if needsFooter { footer }
+            if needsFooter, !(stepped && reviewing) { footer }
         }
         .onChange(of: page) { _, p in writing = questions.indices.contains(p) && !(other[questions[p].question] ?? "").isEmpty }
     }
@@ -618,11 +633,29 @@ struct QuestionForm: View {
     private var allAnswered: Bool { questions.allSatisfy { answer($0) != nil } }
     private var canAdvance: Bool { questions.indices.contains(page) && answer(questions[page]) != nil }
 
+    /// The answers as the review shows them, by question.
+    private var shownAnswers: [Int: String] {
+        var out: [Int: String] = [:]
+        for (i, q) in questions.enumerated() {
+            out[i] = QuestionSteps.shown(q, picked: picks[q.question, default: []], typed: other[q.question] ?? "")
+        }
+        return out
+    }
+
     private func submit() {
         if !allAnswered {
             if let next = questions.firstIndex(where: { answer($0) == nil }) { withAnimation(Theme.Motion.standard) { page = next } }
             return
         }
+        if stepped, !reviewing { // several questions: the review first
+            otherFocused = false
+            withAnimation(Theme.Motion.standard) { reviewing = true }
+            return
+        }
+        send()
+    }
+
+    private func send() {
         sending = true
         otherFocused = false
         var answers: [String: String] = [:]
@@ -1447,6 +1480,13 @@ extension ApprovalCardOptions {
 struct BUIQuestionForm: View {
     @Environment(AppModel.self) private var model
     var interaction: Interaction
+    /// Several questions (#2970): the card's answers held for the review, the question the card opens at when it comes
+    /// back, and a new card each time (its answers and page are read once).
+    @State private var held: ApprovalAnswers?
+    @State private var kept = ApprovalAnswers()
+    @State private var startAt = 0
+    @State private var round = 0
+    @State private var sending = false
 
     private var questions: [Question] { interaction.questions ?? [] }
 
@@ -1461,13 +1501,53 @@ struct BUIQuestionForm: View {
         }
     }
 
-    private var card: some View {
-        let picks = Delegated.recommendedLabels(questions, interaction.delegate?.recommend)
-        return ApprovalCard(questions: zip(questions, picks).map { Self.card($0, picks: $1) }, skipLabel: nil, continueLabel: String(localized: "Next [Interaction Views f82c68]"), sendLabel: String(localized: "Submit"),
-                     customPlaceholder: String(localized: "Other answer…"), sentMessage: String(localized: "Sent"), options: .panel()) { answers in
-            Haptics.tap()
-            Task { await model.resolve(interaction, Resolution(answers: Self.answers(answers, questions))) }
+    @ViewBuilder private var card: some View {
+        if QuestionSteps.enabled(questions), let held {
+            // The card's own ↑ n / N ↓ shows where it is; a question skipped with ↓ shows here as not answered, with a
+            // way back to it.
+            ScreenReview(rows: QuestionSteps.rows(questions, answers: Self.shown(held, questions)), sending: sending ? "submit" : nil,
+                         back: { reopen(at: questions.count - 1) },
+                         submit: { send(held) },
+                         answer: { (row: ScreenReviewRow) in reopen(at: row.index) })
+        } else {
+            let picks = Delegated.recommendedLabels(questions, interaction.delegate?.recommend)
+            ApprovalCard(questions: zip(questions, picks).map { Self.card($0, picks: $1) }, startAt: startAt, answers: kept, skipLabel: nil,
+                         continueLabel: String(localized: "Next [Interaction Views f82c68]"), sendLabel: String(localized: "Submit"),
+                         customPlaceholder: String(localized: "Other answer…"), sentMessage: String(localized: "Sent"), options: .panel()) { answers in
+                Haptics.tap()
+                if QuestionSteps.enabled(questions) { // the review first
+                    withAnimation(Theme.Motion.standard) { held = answers; kept = answers }
+                } else {
+                    Task { await model.resolve(interaction, Resolution(answers: Self.answers(answers, questions))) }
+                }
+            }
+            .id(round)
         }
+    }
+
+    /// Back from the review to a question, with every answer as it was.
+    private func reopen(at index: Int) {
+        startAt = index
+        round += 1
+        withAnimation(Theme.Motion.standard) { held = nil }
+    }
+
+    private func send(_ answers: ApprovalAnswers) {
+        sending = true
+        Task {
+            await model.resolve(interaction, Resolution(answers: Self.answers(answers, questions)))
+            sending = false
+        }
+    }
+
+    /// The card's answers as the review shows them, by question.
+    static func shown(_ a: ApprovalAnswers, _ questions: [Question]) -> [Int: String] {
+        var out: [Int: String] = [:]
+        for (n, q) in questions.enumerated() {
+            let picked = Set(q.options.indices.filter { (a.picks[n] ?? []).contains($0) }.map { q.options[$0].label })
+            out[n] = QuestionSteps.shown(q, picked: picked, typed: a.custom[n] ?? "")
+        }
+        return out
     }
 
     /// `picks`: the options the assistant recommends (#544).
