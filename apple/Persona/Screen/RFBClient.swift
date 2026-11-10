@@ -209,6 +209,7 @@ nonisolated final class RFBClient: @unchecked Sendable {
     /// What changed since withDamage last took it; framebufferLock guards it.
     private var damage = RFBRegion()
     private let zrle = RFBZRLE()
+    private let tight = RFBTight()
     private var task: Task<Void, Never>?
     /// The pointer, keys and clipboard, sent one after another in the order they came (from the handshake's end on).
     let outbox = RFBOutbox()
@@ -412,6 +413,8 @@ nonisolated final class RFBClient: @unchecked Sendable {
                 let compressed = try await reader.bytes(Int(try await reader.u32()))
                 let tiles = try zrle.inflate(compressed)
                 try framebufferLock.withLock { try zrle.draw(tiles, x: x, y: y, w: w, h: h, into: framebuffer) }
+            case 7:
+                try await tightRect(x: x, y: y, w: w, h: h)
             case -223:
                 resize(width: w, height: h)
                 onResize(w, h)
@@ -453,6 +456,42 @@ nonisolated final class RFBClient: @unchecked Sendable {
             framebuffer.resize(width: width, height: height)
             damage = RFBRegion(CGRect(x: 0, y: 0, width: width, height: height))
         }
+    }
+
+    /// Tight (7): the compression control byte, then a fill colour, a JPEG, or a filter's data (under 12 bytes as it
+    /// is, else compressed on the stream the byte names).
+    private func tightRect(x: Int, y: Int, w: Int, h: Int) async throws {
+        let control = try await reader.u8()
+        tight.reset(control)
+        switch control >> 4 {
+        case 8:
+            let c = try await reader.bytes(3)
+            guard x + w <= framebuffer.width, y + h <= framebuffer.height else { throw RFBTight.Failure.rect }
+            framebufferLock.withLock { framebuffer.fill(x: x, y: y, w: w, h: h, b: c[2], g: c[1], r: c[0]) }
+        case 9:
+            let data = try await reader.bytes(try await compactLength())
+            try framebufferLock.withLock { try RFBTight.jpeg(data, x: x, y: y, w: w, h: h, into: framebuffer) }
+        case let basic where basic < 8:
+            let filter: UInt8 = basic & 4 != 0 ? try await reader.u8() : 0
+            var palette: [UInt8] = []
+            if filter == 1 { palette = try await reader.bytes((Int(try await reader.u8()) + 1) * 3) }
+            let size = RFBTight.size(filter: filter, colours: palette.count / 3, w: w, h: h)
+            let data = size < 12 ? try await reader.bytes(size)
+                : try tight.inflate(try await reader.bytes(try await compactLength()), stream: Int(basic & 3))
+            try framebufferLock.withLock { try RFBTight.draw(filter: filter, data, palette: palette, x: x, y: y, w: w, h: h, into: framebuffer) }
+        case let other:
+            _ = other
+            throw Failure.protocolError(String(localized: "Unknown encoding \(Int32(7))"))
+        }
+    }
+
+    /// Tight's length: 7 bits a byte, low first, up to three bytes (the third all 8).
+    private func compactLength() async throws -> Int {
+        let a = Int(try await reader.u8())
+        if a & 0x80 == 0 { return a }
+        let b = Int(try await reader.u8())
+        if b & 0x80 == 0 { return a & 0x7f | b << 7 }
+        return a & 0x7f | (b & 0x7f) << 7 | Int(try await reader.u8()) << 14
     }
 
     /// ExtendedDesktopSize's screens: a count, three bytes of padding, then id, x, y, width, height and flags for each.

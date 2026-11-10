@@ -164,6 +164,45 @@ struct RFBFrameTests {
         #expect(t.sent.contains([248, 0, 0, 0, 0, 0, 0, 0, 3, 7, 8, 9]))
         client.close()
     }
+
+    // MARK: Tight
+
+    /// Tight (#3067) as Python's zlib (sync-flushed, as servers do) and Go's JPEG made it: a fill, a two-colour and a
+    /// four-colour palette on one stream, copy compressed and as it is, gradient, a JPEG, and a stream started again.
+    @Test func tightDrawsWhatWasEncoded() async throws {
+        let update = [UInt8](Data(base64Encoded: "AAAACAAAAAAACgAKAAAAB4DIZDIACgAAABAACAAAAAdQAQEAAAD///8PeJz6z8Dw/z8SBgAAAP//ABoAAAAGAAYAAAAHUAED/wAAAP8AAAD///8AFmJgZGJmYAQTTGCCGUwwIIsDAAAA//8AAAAKAAgABAAAAAcAQXicBMFBAQAwDAIxfudiSlBSJSipEpRU0RKJJyxGRKyoOCHzjM2YmDU1ZxRecJiQsKHhgsorLlNStrRc+QAAAP//AAgACgADAAEAAAAHAAECAwQFBgcICQAMAAoACAAEAAAAB2ACEXic4uLiYsEGGKgEAAAAAP//ABgACAAQAAwAAAAHkNgE/9j/2wCEAAIBAQEBAQIBAQECAgICAgQDAgICAgUEBAMEBgUGBgYFBgYGBwkIBgcJBwYGCAsICQoKCgoKBggLDAsKDAkKCgoBAgICAgICBQMDBQoHBgcKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCv/AABEIAAwAEAMBIgACEQEDEQH/xAGiAAABBQEBAQEBAQAAAAAAAAAAAQIDBAUGBwgJCgsQAAIBAwMCBAMFBQQEAAABfQECAwAEEQUSITFBBhNRYQcicRQygZGhCCNCscEVUtHwJDNicoIJChYXGBkaJSYnKCkqNDU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6g4SFhoeIiYqSk5SVlpeYmZqio6Slpqeoqaqys7S1tre4ubrCw8TFxsfIycrS09TV1tfY2drh4uPk5ebn6Onq8fLz9PX29/j5+gEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoLEQACAQIEBAMEBwUEBAABAncAAQIDEQQFITEGEkFRB2FxEyIygQgUQpGhscEJIzNS8BVictEKFiQ04SXxFxgZGiYnKCkqNTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqCg4SFhoeIiYqSk5SVlpeYmZqio6Slpqeoqaqys7S1tre4ubrCw8TFxsfIycrS09TV1tfY2dri4+Tl5ufo6ery8/T19vf4+fr/2gAMAwEAAhEDEQA/ALlFFFf2Qf59n//ZAAAAEAAEAAQAAAAHAQ54nOJMPs5JCgIAAAD//w==")!)
+        let t = PacedTransport(Self.greeting(40, 20) + [update], every: .milliseconds(5))
+        let client = RFBClient(transport: t) { nil }
+        let seen = Pixels()
+        client.onFrame = { fb, _ in
+            var p: [String: [UInt8]] = [:]
+            for (x, y) in [(5, 5), (10, 0), (18, 0), (10, 1), (18, 1), (26, 0), (27, 0), (26, 1), (28, 0), (29, 0), (3, 11),
+                           (10, 10), (12, 10), (19, 13), (30, 14), (1, 17)] { p["\(x),\(y)"] = fb.pixel(x, y) }
+            seen.set(p)
+        }
+        client.start()
+        for _ in 0..<200 where seen.get.isEmpty { try await Task.sleep(for: .milliseconds(10)) }
+        let p = seen.get
+        #expect(p["5,5"] == [50, 100, 200, 255], "fill, R G B on the wire")
+        #expect(p["10,0"] == [255, 255, 255, 255] && p["18,0"] == [0, 0, 0, 255], "two colours, a bit a pixel")
+        #expect(p["10,1"] == [0, 0, 0, 255] && p["18,1"] == [255, 255, 255, 255], "the next row")
+        #expect(p["26,0"] == [0, 0, 255, 255] && p["27,0"] == [0, 255, 0, 255] && p["26,1"] == [0, 255, 0, 255], "four colours, same stream")
+        #expect(p["28,0"] == [255, 0, 0, 255] && p["29,0"] == [0, 255, 255, 255])
+        #expect(p["3,11"] == [7, 60, 90, 255], "copy, compressed")
+        #expect(p["10,10"] == [9, 8, 7, 255], "copy, under 12 bytes")
+        #expect(p["12,10"] == [10, 10, 10, 255] && p["19,13"] == [38, 38, 38, 255], "gradient")
+        let jpeg = try #require(p["30,14"])
+        #expect(abs(Int(jpeg[0]) - 220) <= 6 && abs(Int(jpeg[1]) - 160) <= 6 && abs(Int(jpeg[2]) - 40) <= 6, "JPEG: \(jpeg)")
+        #expect(p["1,17"] == [199, 99, 9, 255], "a stream started again")
+        client.close()
+    }
+}
+
+nonisolated private final class Pixels: @unchecked Sendable {
+    private let lock = NSLock()
+    private var seen: [String: [UInt8]] = [:]
+    var get: [String: [UInt8]] { lock.withLock { seen } }
+    func set(_ p: [String: [UInt8]]) { lock.withLock { seen = p } }
 }
 
 nonisolated private final class Counter: @unchecked Sendable {
