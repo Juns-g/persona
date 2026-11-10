@@ -249,7 +249,7 @@ PERSONACTL_UDID=<udid> HUB=… scripts/app/cli-tests/agents_list.py 1 quick_filt
 
 Each case in each round prints one `PASS` / `FAIL` line with duration and failure reason, and the last line summarizes one case; any failure gives a non-zero exit code. `CLITEST_LOG=<file>` also appends tab-separated results.
 A failing round saves the scene on the spot: under `CLITEST_OUT` (default `<temp dir>/clitest`), this run's `<time>/<case>-<round>/` has `why.txt` (the reason and which script line it stopped at), `snapshot.png`, `tree.json`, `state.json`, and the end of the `FAIL` line gives the directory; if the App can no longer answer (crashed), only `why.txt` and `dump-errors.txt` are kept. A failure that hits 1 in 3 may not reproduce on rerun, so look here first.
-`idb` must be installed first (menu items, swipes and long presses are real touches).
+`idb` must be installed first for these (menu items, swipes and long presses are real touches); `sync_cases.py` below needs none.
 
 | CLI case | Corresponding XCUITest |
 |---|---|
@@ -260,6 +260,25 @@ How it differs from writing XCUITest:
 - A row's text is the label of a single button ("完成未看、platform 任务 4、3 分钟前、…", i.e. "Unread, platform task 4, 3 minutes ago, …"); find it by containing `、name、`.
 - XCUITest scrolls an element into view before tapping it; the CLI doesn't: rows below the screen are `reach`ed first (swipe up until visible), and the list returns to the top before tapping filters.
 - Menu items don't respond to accessibility activation, so `tap` automatically switches to a real `idb` touch.
+
+### The shared chat sync cases on screen
+
+`sync_cases.py` plays the shared chat sync cases (`spec/fixtures/sync`, #2952) in the App against the mock hub playing each case (`spec/fixtures/sync/README.md`, "The mock hub plays a case"). It is not a `clitest.py` case list: every run is one case with the App as one of its devices, and starts from nothing the App kept.
+
+```sh
+PORT=18760 MOCK_SYNC_CASE='sends.json#send_tied_by_echo' python3 scripts/mock/mock_hub.py &   # any case: the runner loads each in turn
+PERSONACTL_UDID=<udid> HUB=http://127.0.0.1:18760 scripts/app/cli-tests/sync_cases.py                       # every case
+PERSONACTL_UDID=<udid> HUB=… scripts/app/cli-tests/sync_cases.py send_tied_by_echo card_answered_on_other_device@b
+```
+
+- The App is paired as `mock-<device>`. A two-device case's other device is scripted, as in `scripts/mock/test_sync_case_mock.py`, and the case runs once for each device the App can be (`<case>@<device>`).
+- Each step: the mock plays the hub's side, the runner does the user's action in the App (type and Send, a card's Allow / Deny, a failed bubble's Resend / Delete through `activate` `action:`, the alert a refusal raises through `alert`, relaunch), waits the step's `wait`, then compares the step's `expect` and the three invariants with what the chat shows.
+- The chat is read through its marks (`chatMark`, containers listed by `tree --containers`): `chat.user.<item>`, `chat.answer.<item>`, `chat.outbox.<state>.<message>` (the new-conversation page's first message too), `chat.card.<interaction>`, `chat.live`. An element belongs to the mark it is `in`, whatever is drawn over it. Rows scrolled out of sight still count: the chat's list keeps them in the tree.
+- The case is loaded with its times moved to now (`"now": true`): the simulator runs on the real clock, the cases are dated January 2026.
+- No `idb` needed. Every run terminates the App and deletes its `Library/Caches/state` and `chats-*` instead of reinstalling it, and a relaunch keeps `-pairURL` (`keep`): without one the App asks for notifications, a system alert only a touch answers, and the App stays inactive behind it with no socket. The runner fails at once with that hint when the App is not active after a launch; reboot your own simulator to clear such an alert. Don't switch `-ui.scheme` either: the App's icon follows it and the system says so in another alert.
+- Waits run in real time (the wake case waits 600 s); `SYNC_CASE_WAIT_CAP=<seconds>` shortens longer ones. `SYNC_CASE_TRACE=1` prints every step's view.
+- The assistant page has no queue strip, so `status` is not compared (the web's runner doesn't either).
+- One `PASS` / `FAIL` / `KNOWN` line per run; a failing run saves the screen under `CLITEST_OUT` before the App goes. Known failures are in the runner's `KNOWN`, each with its issue and the failure it must show.
 
 Not migrated, staying in XCUITest permanently: `testScrollingTheLongList` (`XCTOSSignpostMetric` measures scroll hitches), ChatFollowTests (real momentum scrolling),
 `testImageViewerStaysOpenThroughUpdates` (image viewer). Not migrated yet: `testFilterBarHugsTheTop` (#740), `testScrolledListHoldsStillThroughUpdates` (the CLI version is flaky),
