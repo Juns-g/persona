@@ -159,8 +159,9 @@ class Ctl:
         if self.via_hub:
             raise CtlError(f"{what} needs the simulator (idb / simctl); over the hub there is no such thing on a real phone")
 
-    def launch(self, hub=None, extra=(), wait=20):
-        """Terminates the app and launches it with a fresh token (paired with `hub` when given); waits for `ping`."""
+    def launch(self, hub=None, extra=(), wait=20, pair="mock"):
+        """Terminates the app and launches it with a fresh token (paired with `hub` when given, with the hub token `pair`:
+        scripts/mock/mock_hub.py playing a sync case takes `mock-<device>` as that device); waits for `ping`."""
         if self.via_hub:
             raise CtlError("launch drives the simulator only: on a real phone install the DEBUG build with Xcode or "
                            "devicectl and open it yourself (launch arguments: -runtimeCLIHub YES)")
@@ -169,7 +170,7 @@ class Ctl:
         sh("xcrun", "simctl", "terminate", self.udid, self.bundle, check=False)
         args = ["-runtimeCLI", str(self.port), "-runtimeCLIToken", self.token]
         if self.hub:
-            args += ["-pairURL", "persona://pair?url=" + urllib.parse.quote(self.hub, safe="") + "&token=mock"]
+            args += ["-pairURL", "persona://pair?url=" + urllib.parse.quote(self.hub, safe="") + "&token=" + urllib.parse.quote(pair, safe="")]
         sh("xcrun", "simctl", "launch", self.udid, self.bundle, *args, *extra)
         self._save()
         deadline = time.time() + wait

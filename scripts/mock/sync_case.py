@@ -295,7 +295,12 @@ class CaseHub:
             if path == "/api/v1/sessions":
                 return self.read(device, "/sessions", lambda: {"sessions": self.rows()})
             if path == "/api/v1/assistant":
-                return 200, {"machine_id": self.chat["machine_id"], "conversations": self.rows()}
+                # the fields the apps decode as required (iOS: `launcher`, `cwd`); an assistant chat is the main one
+                st = {"machine_id": self.chat["machine_id"], "launcher": "claude", "cwd": "/home/user/project",
+                      "conversations": self.rows()}
+                if self.chat.get("assistant") and not self.chat.get("new"):
+                    st["main"] = self.chat["session_id"]
+                return 200, st
             if path == "/api/v1/interactions":
                 return self.read(device, "/interactions", lambda: {"interactions": copy.deepcopy(self.truth.pending)})
             if path == "/api/v1/machines":
