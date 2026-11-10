@@ -85,8 +85,14 @@ private struct SelectableInLift: ViewModifier {
             RecordsOffer(place: place) {
                 content.accessibilityHidden(select != nil) // the text view's words, while it is over them
             }
-            .overlay(alignment: .topLeading) {
-                if let select, let menu { LiftTextView(text: text, words: words, select: select, menu: menu, place: place) }
+            // The text view over them, its lines on theirs (`LiftLayout.snap`).
+            .overlayPreferenceValue(Text.LayoutKey.self) { layouts in
+                if let select, let menu {
+                    GeometryReader { geo in
+                        LiftTextView(text: text, words: words, select: select, menu: menu, place: place, rows: Self.rows(layouts, geo))
+                            .frame(width: geo.size.width, height: geo.size.height)
+                    }
+                }
             }
         } else {
             content
@@ -94,6 +100,20 @@ private struct SelectableInLift: ViewModifier {
         #else
         content
         #endif
+    }
+
+    /// The baselines of the words' lines, in their coordinates, one a row (a numbered item's marker and its words share one).
+    private static func rows(_ layouts: Text.LayoutKey.Value, _ geo: GeometryProxy) -> [CGFloat] {
+        var all: [CGFloat] = []
+        for a in layouts {
+            let p = geo[a.origin]
+            for line in a.layout where line.reduce(0, { $0 + $1.count }) > 0 {
+                all.append(p.y + line.typographicBounds.origin.y)
+            }
+        }
+        var rows: [CGFloat] = []
+        for b in all.sorted() where rows.last.map({ b - $0 > 0.5 }) ?? true { rows.append(b) }
+        return rows
     }
 }
 
@@ -169,6 +189,8 @@ private struct LiftTextView: UIViewRepresentable {
     var select: InPlaceSelect
     var menu: MessageMenu
     var place: LiftPlace
+    /// The chat's lines (`SelectableInLift.rows`).
+    var rows: [CGFloat]
 
     func makeUIView(context: Context) -> LiftUITextView { LiftUITextView() }
 
@@ -176,6 +198,7 @@ private struct LiftTextView: UIViewRepresentable {
         let menu = menu
         v.place = place
         v.show(text, words, design: UIFontDescriptor.SystemDesign(StyleSpec.current.fontDesign)) // the app's, as RootView sets it
+        v.snap(to: rows)
         if let bar = menu.lift?.bar,
            let quote = menu.selectionQuote(of: SelectableText(text: bar.text, plain: bar.isUser, msg: bar.id, quotable: !bar.pending)) {
             v.quote = { picked in
@@ -217,6 +240,9 @@ final class LiftUITextView: UITextView, UITextViewDelegate, UIEditMenuInteractio
     /// What the words under it were offered (`RecordsOffer`).
     var place: LiftPlace?
     private var design = UIFontDescriptor.SystemDesign.default
+    /// Its lines on the chat's (`LiftLayout.snap`): the chat's baselines, and the delegate that puts each line there.
+    private var rows: [CGFloat] = []
+    private let snapper = LineSnap()
     /// The menu shown over the words a press picked. The text view's own menu only comes up on its own gestures, and
     /// its interaction is not among `interactions`; this one shows the same items.
     private lazy var menuInteraction = UIEditMenuInteraction(delegate: self)
@@ -243,6 +269,7 @@ final class LiftUITextView: UITextView, UITextViewDelegate, UIEditMenuInteractio
         container.widthTracksTextView = false // the words' wrapping width, set in `layoutSubviews`
         container.lineFragmentPadding = 0
         layout.addTextContainer(container)
+        layout.delegate = snapper
         storage.addLayoutManager(layout)
         super.init(frame: .zero, textContainer: container)
         isEditable = false
@@ -280,9 +307,40 @@ final class LiftUITextView: UITextView, UITextViewDelegate, UIEditMenuInteractio
         case .reply: ReplyText.attributed(source.text, look: look, width: width)
         }
         attributedText = ReplyText.clear(words)
+        resnap()
         #if DEBUG
         setNeedsLayout() // `LiftLines`
         #endif
+    }
+
+    /// The chat's lines, for this view's to go on.
+    func snap(to rows: [CGFloat]) {
+        guard rows.count != self.rows.count || zip(rows, self.rows).contains(where: { abs($0 - $1) > 0.25 }) else { return }
+        self.rows = rows
+        resnap()
+    }
+
+    /// Lays the words out as they come, then again with each line on the chat's line for it (`LiftLayout.snap`).
+    private func resnap() {
+        let all = NSRange(location: 0, length: storage.length)
+        snapper.targets = [:]
+        layout.invalidateLayout(forCharacterRange: all, actualCharacterRange: nil)
+        guard !rows.isEmpty, storage.length > 0 else { return }
+        layout.ensureLayout(for: textContainer)
+        let text = storage.string as NSString
+        var starts: [Int] = []
+        var lines: [(baseline: CGFloat, block: Bool)] = []
+        layout.enumerateLineFragments(forGlyphRange: layout.glyphRange(for: textContainer)) { rect, _, _, range, _ in
+            let s = text.substring(with: self.layout.characterRange(forGlyphRange: range, actualGlyphRange: nil))
+            guard s.contains(where: { !$0.isWhitespace }) else { return }
+            starts.append(range.location)
+            lines.append((rect.minY + self.layout.location(forGlyphAt: range.location).y, s.contains("\u{FFFC}")))
+        }
+        let reach = UIFont.preferredFont(forTextStyle: .body, compatibleWith: traitCollection).pointSize * 0.6
+        snapper.targets = Dictionary(zip(starts, LiftLayout.snap(lines, to: rows, reach: reach)), uniquingKeysWith: { a, _ in a })
+        layout.invalidateLayout(forCharacterRange: all, actualCharacterRange: nil)
+        layout.ensureLayout(for: textContainer)
+        setNeedsDisplay()
     }
 
     /// Where the words under it wrap: at the width they were offered, or (none known) at their own.
@@ -492,11 +550,15 @@ extension LiftLines {
         let c = v.textContainer, inset = v.textContainerInset
         layout.ensureLayout(for: c)
         var out: [Line] = []
+        let text = v.textStorage
         layout.enumerateLineFragments(forGlyphRange: layout.glyphRange(for: c)) { rect, _, _, range, _ in
             var first = -1, last = -1, word = -1, n = 0
             for g in range.location..<NSMaxRange(range) {
                 let kind = layout.propertyForGlyph(at: g)
                 if kind.contains(.controlCharacter) || kind.contains(.null) { continue }
+                let at = layout.characterIndexForGlyph(at: g)
+                if at < text.length, text.attribute(.attachment, at: at, effectiveRange: nil) != nil { return } // a table: not a line of words
+                if at < text.length, text.attribute(.replyMarker, at: at, effectiveRange: nil) != nil { continue }
                 if first < 0 { first = g }
                 last = g
                 if !kind.contains(.elastic) { word = g }
@@ -516,6 +578,8 @@ extension LiftLines {
 #endif
 
 extension NSAttributedString.Key {
+    /// A list item's marker and the tab after it (not words of its line).
+    nonisolated static let replyMarker = NSAttributedString.Key("PersonaReplyMarker")
     /// What `ReplyLayout` draws behind a run of lines (a `ReplyBlock`).
     nonisolated static let replyBlock = NSAttributedString.Key("PersonaReplyBlock")
     /// What a picture in the words copies as (a table's Markdown).
@@ -582,6 +646,22 @@ final class ReplyBlocksView: UIView {
 }
 
 /// A line of the selection's highlight (`LiftUITextView.selectionRects(for:)`).
+/// Puts each line of a text view where `targets` says its baseline goes (by the line's first glyph); the rest as laid out.
+nonisolated final class LineSnap: NSObject, NSLayoutManagerDelegate {
+    var targets: [Int: CGFloat] = [:]
+
+    func layoutManager(_ layoutManager: NSLayoutManager, shouldSetLineFragmentRect lineFragmentRect: UnsafeMutablePointer<CGRect>,
+                       lineFragmentUsedRect: UnsafeMutablePointer<CGRect>, baselineOffset: UnsafeMutablePointer<CGFloat>,
+                       in textContainer: NSTextContainer, forGlyphRange glyphRange: NSRange) -> Bool {
+        guard let target = targets[glyphRange.location] else { return false }
+        let dy = target - (lineFragmentRect.pointee.origin.y + baselineOffset.pointee)
+        guard abs(dy) > 0.01 else { return false }
+        lineFragmentRect.pointee.origin.y += dy
+        lineFragmentUsedRect.pointee.origin.y += dy
+        return true
+    }
+}
+
 final class LineSelectionRect: UITextSelectionRect {
     private let box: CGRect
     private let start: Bool
@@ -720,7 +800,7 @@ enum ReplyText {
         }
 
         private var markerWidth: CGFloat { look.size * 1.5 }
-        private var markerGap: CGFloat { look.size * 0.35 }
+        private var markerGap: CGFloat { look.size * 0.5 } // the words at 2 em, as the chat's lists
 
         func read(_ markdown: String) {
             let source = markdown.components(separatedBy: "\n")
@@ -866,6 +946,7 @@ enum ReplyText {
             let attrs: [NSAttributedString.Key: Any] = [.font: look.code, .foregroundColor: look.color, .replyBlock: block]
             add(NSAttributedString(string: text, attributes: attrs), in: blocks.count - 1) { s in
                 s.lineSpacing = self.look.code.pointSize * ReplyMetrics.codeLineSpacing
+                s.lineBreakMode = .byClipping // the chat's code scrolls sideways, its lines whole
                 s.firstLineHeadIndent = Theme.Space.m
                 s.headIndent = Theme.Space.m
                 s.tailIndent = -Theme.Space.m
@@ -895,7 +976,7 @@ enum ReplyText {
                 shown = ["•", "◦", "▪"][min(level, 2)]
             }
             let markerSize = (shown as NSString).size(withAttributes: [.font: look.body]).width
-            let line = NSMutableAttributedString(string: shown + "\t", attributes: [.font: look.body, .foregroundColor: look.color])
+            let line = NSMutableAttributedString(string: shown + "\t", attributes: [.font: look.body, .foregroundColor: look.color, .replyMarker: true])
             line.append(inline(text, font: look.body))
             let textAt = levels[level].text
             add(line, in: blocks.count - 1, lineSpacing: true, item: true) { s in

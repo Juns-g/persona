@@ -75,4 +75,20 @@ struct MessageLiftTests {
         #expect(speed(0, 90) == -900)
         #expect(speed(10, 0) == 0, "nothing shown, nothing to scroll")
     }
+
+    /// The text view over selected words puts its lines on the chat's (#3188): each on the nearest row ahead, a line
+    /// the chat has no row for passed over with the move before it, and after a picture the next line on the next row.
+    @Test func theTextViewsLinesGoOnTheChats() {
+        func snap(_ lines: [(CGFloat, Bool)], _ rows: [CGFloat]) -> [CGFloat] {
+            LiftLayout.snap(lines.map { (baseline: $0.0, block: $0.1) }, to: rows, reach: 10)
+        }
+        // Its lines a little further apart than the chat's: each goes on the chat's.
+        #expect(snap([(20, false), (44.7, false), (69.4, false)], [20, 44.3, 68.6]) == [20, 44.3, 68.6])
+        // A rule the chat draws as no text: it keeps the move before it, the line after goes on its row.
+        #expect(snap([(20, false), (40, false), (60, false)], [20, 61]) == [20, 40, 61])
+        // A table: the chat's rows for it are not there; the line after it takes the next row, wherever it is.
+        #expect(snap([(20, false), (60, true), (200, false), (224, false)], [20, 240, 264]) == [20, 60, 240, 264])
+        // No rows: as laid out.
+        #expect(snap([(20, false), (44, false)], []) == [20, 44])
+    }
 }

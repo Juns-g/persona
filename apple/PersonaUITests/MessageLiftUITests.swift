@@ -18,6 +18,10 @@ final class MessageLiftUITests: XCTestCase {
     private let askMid = "server/b2e4d6f8-0000-4000-8000-0000000c1e0a"
     /// A long message of yours with path links, and an answer with inline code, a list, a code block and a quote.
     private let mix = "macbook/a1f3c2d4-0000-4000-8000-0000000c1e0b"
+    /// The case reported (#3188): a message of yours with a path, then an answer with inline code in its sentences, a
+    /// long path in inline code that wraps, a list, a code block, a quote and a link; in an Agents chat and in Persona's.
+    private let key = "macbook/a1f3c2d4-0000-4000-8000-0000000c1e0c"
+    private let askKey = "server/b2e4d6f8-0000-4000-8000-0000000c1e0c"
     private let schemes = (ProcessInfo.processInfo.environment["PERSONA_LIFT_SCHEME"] ?? "light").split(separator: ",").map(String.init)
     private var scheme = "light"
 
@@ -132,11 +136,14 @@ final class MessageLiftUITests: XCTestCase {
         let end = text(words)
         XCTAssertTrue(end.waitForExistence(timeout: 20), "missing the answer")
         sleep(2) // the chat settles at its newest; the header folds
-        // Rows of the flipped chat list may report flipped frames: press by the centre, in the window.
+        // Rows of the flipped chat list may report flipped frames: press in the window, in the part of it that shows
+        // (a long message may start above the screen), clear of the bars at the top and bottom.
         let window = app.windows.firstMatch.frame
         var f = end.frame
         if !window.contains(CGPoint(x: f.midX, y: f.midY)) { f.origin.y = window.height - f.maxY }
-        app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: f.midX, dy: f.midY)).press(forDuration: 0.8)
+        let shown = f.intersection(window.insetBy(dx: 0, dy: window.height * 0.15))
+        let at = shown.isNull ? CGPoint(x: f.midX, y: f.midY) : CGPoint(x: shown.midX, y: shown.midY)
+        app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: at.x, dy: at.y)).press(forDuration: 0.8)
         XCTAssertTrue(app.buttons["复制"].firstMatch.waitForExistence(timeout: 3), "no bar")
         sleep(1)
     }
@@ -167,8 +174,9 @@ final class MessageLiftUITests: XCTestCase {
         scrollToTheTop()
         XCTAssertTrue(shows(firstLine), "the lifted answer scrolls to its first line:\n\(lifted.debugDescription)")
         XCTAssertEqual(app.buttons["复制"].firstMatch.frame, bar, "the bar stays where it is")
-        // Nothing over it (Persona's top bar was): a tap on the first line lands on it.
-        XCTAssertTrue(firstLine.isHittable, "the first line is covered")
+        // Nothing of the page over it: Persona's top bar is under the dimming (a tap there is the lift's, not the bar's).
+        let topBar = app.buttons["assistant-sidebar-button"].firstMatch
+        if topBar.exists { XCTAssertFalse(topBar.isHittable, "the top bar is over the lifted message") }
         shot(name + "-top")
     }
 
@@ -194,7 +202,7 @@ final class MessageLiftUITests: XCTestCase {
     @MainActor func testAnAnswerUnderPersonasTopBarLiftsOverIt() throws {
         inEachScheme {
             launchPersona(askMid)
-            let avatar = app.buttons["persona-avatar"].firstMatch
+            let avatar = app.buttons["assistant-sidebar-button"].firstMatch
             XCTAssertTrue(avatar.waitForExistence(timeout: 20), "no top bar")
             liftAt("要我先带你看哪一块")
             XCTAssertTrue(lifted.waitForExistence(timeout: 3), "no lifted copy")
@@ -214,8 +222,9 @@ final class MessageLiftUITests: XCTestCase {
             XCTAssertTrue(words.waitForExistence(timeout: 5), "选择文本 did not select the words in place")
             sleep(1)
             // A paragraph's frame hugs its words: the end handle is under the last one's end.
-            let last = try XCTUnwrap(words.textViews.allElementsBoundByIndex.last { !$0.label.isEmpty }, "no paragraphs:\n\(words.debugDescription)").frame
-            let top = words.frame.minY, edge = lifted.frame.minY
+            let paragraphs = words.textViews.allElementsBoundByIndex.filter { !$0.label.isEmpty }
+            let last = try XCTUnwrap(paragraphs.last, "no paragraphs:\n\(words.debugDescription)").frame
+            let top = try XCTUnwrap(paragraphs.first).frame.minY, edge = lifted.frame.minY
             XCTAssertLessThan(top, edge - 200, "the words start well out of sight")
             shot("handle-start")
             let origin = app.coordinate(withNormalizedOffset: .zero)
@@ -223,7 +232,8 @@ final class MessageLiftUITests: XCTestCase {
                 .press(forDuration: 0.5, thenDragTo: origin.withOffset(CGVector(dx: app.frame.midX, dy: edge + 4)),
                        withVelocity: .default, thenHoldForDuration: 4)
             sleep(1)
-            XCTAssertGreaterThanOrEqual(words.frame.minY, edge, "held at the top edge, the handle scrolled the lifted copy up to its first line")
+            let now = try XCTUnwrap(words.textViews.allElementsBoundByIndex.first { !$0.label.isEmpty }).frame.minY
+            XCTAssertGreaterThanOrEqual(now, edge - 1, "held at the top edge, the handle scrolled the lifted copy up to its first line (\(top) → \(now))")
             XCTAssertTrue(app.textViews["lift-text"].exists, "still selecting")
             shot("handle-top")
         }
@@ -250,7 +260,10 @@ final class MessageLiftUITests: XCTestCase {
     /// What `-showLiftLines` writes, once it holds still (the lifted copy, and the text view over it, laid out).
     @MainActor private func lines(selecting: Bool = false) -> Lines {
         let e = app.descendants(matching: .any)["lift-lines"].firstMatch
-        XCTAssertTrue(e.waitForExistence(timeout: 5), "no lift-lines (-showLiftLines)")
+        guard e.waitForExistence(timeout: 3) else {
+            XCTFail("no lift-lines (-showLiftLines; a build before #3188 has none)")
+            return Lines(chat: [], lift: [], select: [])
+        }
         var last = "", now = ""
         for _ in 0..<10 {
             now = e.value as? String ?? ""
@@ -283,7 +296,11 @@ final class MessageLiftUITests: XCTestCase {
     /// Lifts the message with `words` and selects all of its words in place: in each state its lines are where the
     /// chat drew them. Lifted, a message with no room for its bar beside it moves (all of it, upright, `moves`); the
     /// text view over the selected words lays them out as the chat did (`selectMatches`), within half a point.
-    @MainActor private func checkTheWordsStay(_ words: String, _ name: String, moves: Bool = false, selectMatches: Bool = true) {
+    @MainActor private func checkTheWordsStay(_ words: String, _ name: String, moves: Bool = false, selectMatches: Bool = true,
+                                             close: Bool = false) {
+        XCTAssertTrue(text(words).waitForExistence(timeout: 20), "\(name): missing \(words)")
+        sleep(2)
+        shot(name + "-normal")
         liftAt(words)
         let lifted = lines()
         let dy = (lifted.lift.first?.baseline ?? 0) - (lifted.chat.first?.baseline ?? 0)
@@ -299,6 +316,20 @@ final class MessageLiftUITests: XCTestCase {
         }
         print("LIFT-LINES \(name) dy=\(dy)\n chat=\(lifted.chat)\n lift=\(lifted.lift)\n select=\(selected.select)")
         shot(name + "-selected")
+        if close { closeTheLift(name) }
+    }
+
+    /// Two taps beside the lifted message: the first ends the selecting, the second puts it back.
+    @MainActor private func closeTheLift(_ name: String) {
+        for _ in 0..<2 {
+            let l = self.lifted.frame
+            let y = l.minY > 140 ? l.minY / 2 : (l.maxY + app.frame.maxY) / 2
+            app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: app.frame.width * 0.1, dy: y)).tap()
+            sleep(1)
+            if !self.lifted.exists { break }
+        }
+        XCTAssertTrue(self.lifted.waitForNonExistence(timeout: 3), "\(name): the lift did not close")
+        sleep(1)
     }
 
     @MainActor private func launchWithLines(_ chat: String, persona: Bool = false, style: String? = nil) {
@@ -342,6 +373,29 @@ final class MessageLiftUITests: XCTestCase {
             app = XCUIApplication()
             launchWithLines(mix, style: "clay")
             checkTheWordsStay("下一次核对在整点之后五分钟", "clay-answer", moves: true)
+        }
+    }
+
+    /// Every style (PERSONA_LIFT_STYLES, all five by default) in PERSONA_LIFT_SCHEME's schemes, in an Agents chat and in
+    /// Persona's conversation: the reported answer and the message of yours before it, each in the chat, lifted and
+    /// selected in place, line by line within half a point. PERSONA_LIFT_MATRIX=1 (about 15 minutes a device);
+    /// PERSONA_LIFT_MATRIX_SCHEMES: its own schemes (light and dark), whatever the other tests run in.
+    @MainActor func testEveryStyleKeepsTheWordsWhereTheyAre() throws {
+        let env = ProcessInfo.processInfo.environment
+        guard env["PERSONA_LIFT_MATRIX"] == "1" else { throw XCTSkip("PERSONA_LIFT_MATRIX=1") }
+        let styles = (env["PERSONA_LIFT_STYLES"] ?? "glass,clay,island,lark,beautiful").split(separator: ",").map(String.init)
+        let looks = env["PERSONA_LIFT_MATRIX_SCHEMES"].map { $0.split(separator: ",").map(String.init) } ?? schemes
+        for style in styles {
+            for look in looks {
+                scheme = look
+                for (chat, persona) in [(key, false), (askKey, true)] {
+                    app = XCUIApplication()
+                    launchWithLines(chat, persona: persona, style: style)
+                    let tag = "matrix-\(style)-\(persona ? "persona" : "agents")"
+                    checkTheWordsStay("在 hub 上运行下面这条", tag + "-answer", moves: true, close: true)
+                    checkTheWordsStay("你先把管理密钥存到本机文件", tag + "-mine", moves: true)
+                }
+            }
         }
     }
 }

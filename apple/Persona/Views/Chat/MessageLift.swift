@@ -85,6 +85,25 @@ extension EnvironmentValues {
 }
 
 extension View {
+    /// A block of the words drawn as one picture in the text view over a lifted message (a table): its texts' lines
+    /// are not lines of the words (`LiftLayout.snap`).
+    func oneBlockInLift() -> some View { modifier(OneBlockInLift()) }
+}
+
+private struct OneBlockInLift: ViewModifier {
+    @Environment(\.liftCopy) private var lifted
+
+    func body(content: Content) -> some View {
+        #if DEBUG
+        let drop = lifted || LiftLines.on
+        #else
+        let drop = lifted
+        #endif
+        content.transformPreference(Text.LayoutKey.self) { if drop { $0 = [] } }
+    }
+}
+
+extension View {
     /// The whole environment a view was drawn in elsewhere (its own, where there is none).
     @ViewBuilder func environment(from values: EnvironmentValues?) -> some View {
         if let values { environment(\EnvironmentValues.self, values) } else { self }
@@ -140,6 +159,40 @@ nonisolated enum LiftLayout {
         if y < band { return -speed * min((band - y) / band, 1) }
         if y > height - band { return speed * min((y - (height - band)) / band, 1) }
         return 0
+    }
+
+    /// Where the lines of the text view over a lifted message's words go (#3188): on the chat's own lines. lines: the
+    /// text view's, in order, with the baseline it gave each and whether it holds a picture (a table); rows: the chat's
+    /// baselines, sorted. Each line takes the nearest row ahead within `reach` of where it would be (its baseline, moved
+    /// as much as the line before it was), so a line the chat has no row for (a rule) or a row the text view has no
+    /// line for is passed over; a picture keeps that move, and the line after it takes the next row. The rest of the
+    /// text view's lines (and all of them, with no rows) stay as they are, moved as much as the line before.
+    static func snap(_ lines: [(baseline: CGFloat, block: Bool)], to rows: [CGFloat], reach: CGFloat) -> [CGFloat] {
+        var out: [CGFloat] = [], next = 0, moved: CGFloat = 0, afterBlock = false
+        for line in lines {
+            let at = line.baseline + moved
+            guard !line.block else {
+                out.append(at)
+                afterBlock = true
+                continue
+            }
+            var best: Int?
+            var k = next
+            while k < rows.count, afterBlock || rows[k] <= at + reach {
+                if afterBlock { best = k; break }
+                if abs(rows[k] - at) <= reach, best.map({ abs(rows[k] - at) < abs(rows[$0] - at) }) ?? true { best = k }
+                k += 1
+            }
+            afterBlock = false
+            if let b = best {
+                moved = rows[b] - line.baseline
+                next = b + 1
+                out.append(rows[b])
+            } else {
+                out.append(at)
+            }
+        }
+        return out
     }
 }
 

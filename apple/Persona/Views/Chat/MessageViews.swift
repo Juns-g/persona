@@ -65,7 +65,7 @@ extension MarkdownUI.Theme {
                     .overlay(alignment: .leading) { Rectangle().fill(Theme.accent.opacity(0.5)).frame(width: Theme.Size.bar) }
                     .markdownTextStyle { ForegroundColor(.secondary) }
             }
-            .table { config in FittedTable(config: config) } // fits the width it gets; scrolls only when it cannot
+            .table { config in FittedTable(config: config).oneBlockInLift() } // fits the width it gets; scrolls only when it cannot
             .tableCell { config in FittedTableCell(config: config) }
     }
 }
