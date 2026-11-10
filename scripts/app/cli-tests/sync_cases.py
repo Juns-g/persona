@@ -258,6 +258,11 @@ def match_requests(want, seen, before):
 
 
 def req_is(w, s, before):
+    # one_of: any one of these, where the protocol allows several ways (#2770); an op's receipt goes by the write's id
+    if "one_of" in w:
+        return any(req_is(o, s, before) for o in w["one_of"])
+    if w.get("get") == "/ops":
+        return s.get("get") == "/ops" and s.get("key") == w.get("id")
     if "get" in w:
         return s.get("get") == w["get"] and ("after_seq" not in w or s.get("after_seq") == w["after_seq"])
     if "ws" in w:
