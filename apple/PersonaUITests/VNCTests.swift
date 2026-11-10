@@ -390,23 +390,31 @@ final class VNCTests: XCTestCase {
         app.buttons["关闭"].firstMatch.tap()
     }
 
-    /// At the largest text size the row has no room for Picture in Picture next to Close (#3075): it goes back into ⋯,
-    /// and every button of both bars stays on the screen.
-    @MainActor func testPictureInPictureInMoreAtTheLargestText() throws {
+    /// At the largest text size (#3075) every button of both bars stays on the screen, the name gets a line of its own
+    /// under the buttons rather than being squeezed to a letter, and Picture in Picture is still a tap away: next to
+    /// Close where the row has room for it, else in ⋯.
+    @MainActor func testTheTopBarFitsAtTheLargestText() throws {
         let (app, _) = try signedInMachinePage(["-showPiPSource", "YES", "-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"])
         let more = app.buttons["vnc-more"].firstMatch
         XCTAssertTrue(more.waitForExistence(timeout: 10), "no ⋯:\n\(app.debugDescription)")
-        let width = app.windows.firstMatch.frame.width
-        for id in ["screen-close", "vnc-help", "vnc-more", "vnc-clipboard", "vnc-keyboard"] {
-            let f = app.buttons[id].firstMatch.frame
-            XCTAssertTrue(f.minX >= 0 && f.maxX <= width, "\(id) on the screen: \(f), the screen \(width) wide")
+        let screen = app.windows.firstMatch.frame
+        var buttons: [CGRect] = []
+        for id in ["screen-close", "vnc-pip", "vnc-help", "vnc-more", "vnc-clipboard", "vnc-keyboard"] {
+            let b = app.buttons[id].firstMatch
+            if id == "vnc-pip", !b.exists { continue }
+            XCTAssertTrue(screen.contains(b.frame), "\(id) on the screen: \(b.frame) in \(screen)")
+            buttons.append(b.frame)
         }
-        XCTAssertFalse(app.buttons["vnc-pip"].exists, "no room next to Close:\n\(app.debugDescription)")
+        let phase = app.descendants(matching: .any)["screen-phase"].firstMatch
+        XCTAssertTrue(phase.exists && screen.contains(phase.frame), "the name on the screen: \(phase.frame)")
+        XCTAssertFalse(buttons.contains { $0.intersects(phase.frame) }, "the name clear of the buttons: \(phase.frame) vs \(buttons)")
+        let pipButton = app.buttons["vnc-pip"].exists
         rest()
-        shot(app, "vnc-pip-in-more")
+        shot(app, "vnc-largest-text"); hold("vnc-largest-text")
         more.tap()
-        XCTAssertTrue(app.buttons["小窗"].firstMatch.waitForExistence(timeout: 5), "in ⋯:\n\(app.debugDescription)")
-        shot(app, "vnc-pip-in-more-menu")
+        let item = app.buttons.matching(NSPredicate(format: "label == '小窗' AND identifier != 'vnc-pip'")).firstMatch
+        XCTAssertEqual(item.waitForExistence(timeout: pipButton ? 2 : 5), !pipButton, "Picture in Picture next to Close or in ⋯, once:\n\(app.debugDescription)")
+        shot(app, "vnc-largest-text-more")
     }
 
     /// On its side (#3075): the page turns to either landscape, the picture takes the height between two rails of buttons

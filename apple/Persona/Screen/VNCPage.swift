@@ -154,60 +154,85 @@ struct VNCPage: View {
 
     @ViewBuilder private var topBar: some View {
         #if os(iOS)
-        // Picture in Picture right of Close (#3075), a tap away; in ⋯ as before where the row would run off the screen
-        // (the largest text sizes). Down a rail there is room for it.
-        if VNCPiP.supported, !railed {
-            ViewThatFits(in: .horizontal) {
-                topRow(pipButton: true)
-                topRow(pipButton: false)
-            }
-        } else {
-            topRow(pipButton: VNCPiP.supported)
-        }
+        let pip = VNCPiP.supported
         #else
-        topRow(pipButton: false)
+        let pip = false
         #endif
+        if railed {
+            topRow(pipButton: pip, nameBelow: false)
+        } else {
+            // One line where it fits, Picture in Picture right of Close (#3075). At the largest text sizes the name goes
+            // under the buttons rather than being squeezed to a letter, and where the buttons themselves don't fit,
+            // Picture in Picture goes into ⋯ as before.
+            ViewThatFits(in: .horizontal) {
+                topRow(pipButton: pip, nameBelow: false)
+                topRow(pipButton: pip, nameBelow: true)
+                topRow(pipButton: false, nameBelow: false)
+                topRow(pipButton: false, nameBelow: true)
+            }
+        }
     }
 
-    private func topRow(pipButton: Bool) -> some View {
-        bar(spacing: Theme.Space.s) {
-            Button { close() } label: { barIcon(Theme.Icon.close) }
-            .themedButton()
-            .accessibilityLabel("Close Screen")
-            .accessibilityIdentifier("screen-close")
-            if pipButton {
-                Button { toPictureInPicture() } label: { barIcon(Theme.Icon.pictureInPicture) }
-                    .themedButton()
-                    .accessibilityLabel("Picture in Picture")
-                    .accessibilityIdentifier("vnc-pip")
-            }
-            Spacer(minLength: Theme.Space.s)
-            if railed {
-                // No room for the name down a rail: the dot, with the name and the phase for VoiceOver.
-                Circle().fill(dot).scaledFrame(width: Theme.Size.dot, height: Theme.Size.dot)
-                    .accessibilityElement()
-                    .accessibilityLabel(name)
-                    .accessibilityValue(phaseLabel)
-                    .accessibilityIdentifier("screen-phase")
-            } else {
-                HStack(spacing: Theme.Space.xs) {
-                    Circle().fill(dot).scaledFrame(width: Theme.Size.dot, height: Theme.Size.dot)
-                    Text(name).font(Theme.Font.bodyStrong).lineLimit(1)
-                    Text(phaseLabel).font(Theme.Font.label).foregroundStyle(.secondary).lineLimit(1)
-                }
-                .accessibilityElement(children: .combine)
-                .accessibilityIdentifier("screen-phase")
-                // Whatever the buttons leave, not a third of it beside the two spacers; and when the row is measured
-                // (`ViewThatFits`), a tap target's width: a long name is cut short, it does not move a button into ⋯.
-                .frame(idealWidth: Theme.Size.tapTarget)
-                .layoutPriority(1)
-            }
-            Spacer(minLength: Theme.Space.s)
-            Button { help = true } label: { barIcon(Theme.Icon.help) }
+    private func topRow(pipButton: Bool, nameBelow: Bool) -> some View {
+        VStack(spacing: .zero) {
+            bar(spacing: Theme.Space.s) {
+                Button { close() } label: { barIcon(Theme.Icon.close) }
                 .themedButton()
-                .accessibilityLabel("Help")
-                .accessibilityIdentifier("vnc-help")
-            moreMenu(pipItem: !pipButton)
+                .accessibilityLabel("Close Screen")
+                .accessibilityIdentifier("screen-close")
+                if pipButton {
+                    Button { toPictureInPicture() } label: { barIcon(Theme.Icon.pictureInPicture) }
+                        .themedButton()
+                        .accessibilityLabel("Picture in Picture")
+                        .accessibilityIdentifier("vnc-pip")
+                }
+                Spacer(minLength: Theme.Space.s)
+                if railed {
+                    // No room for the name down a rail: the dot, with the name and the phase for VoiceOver.
+                    Circle().fill(dot).scaledFrame(width: Theme.Size.dot, height: Theme.Size.dot)
+                        .accessibilityElement()
+                        .accessibilityLabel(name)
+                        .accessibilityValue(phaseLabel)
+                        .accessibilityIdentifier("screen-phase")
+                    Spacer(minLength: Theme.Space.s)
+                } else if !nameBelow {
+                    // Whatever the buttons leave, not a third of it beside the two spacers.
+                    nameAndPhase.layoutPriority(1)
+                    Spacer(minLength: Theme.Space.s)
+                }
+                Button { help = true } label: { barIcon(Theme.Icon.help) }
+                    .themedButton()
+                    .accessibilityLabel("Help")
+                    .accessibilityIdentifier("vnc-help")
+                moreMenu(pipItem: !pipButton)
+            }
+            if nameBelow {
+                nameAndPhase
+                    .padding(.horizontal, Theme.Space.page)
+                    .padding(.bottom, Theme.Space.s)
+            }
+        }
+    }
+
+    /// The dot, the Mac's name and the stage. Measured (`ViewThatFits`) as the dot, the name's first four letters and the
+    /// stage, so a row is picked only where at least that much reads ("MacB…"); laid out, it takes the room it is given
+    /// and the name is cut short, the stage kept whole.
+    private var nameAndPhase: some View {
+        let least = name.count > 4 ? String(name.prefix(4)) + "…" : name
+        return nameLine(least).hidden().accessibilityHidden(true)
+            .frame(maxWidth: .infinity)
+            .overlay {
+                nameLine(name)
+                    .accessibilityElement(children: .combine)
+                    .accessibilityIdentifier("screen-phase")
+            }
+    }
+
+    private func nameLine(_ shown: String) -> some View {
+        HStack(spacing: Theme.Space.xs) {
+            Circle().fill(dot).scaledFrame(width: Theme.Size.dot, height: Theme.Size.dot)
+            Text(shown).font(Theme.Font.bodyStrong).lineLimit(1)
+            Text(phaseLabel).font(Theme.Font.label).foregroundStyle(.secondary).lineLimit(1).layoutPriority(1)
         }
     }
 
