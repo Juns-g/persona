@@ -213,6 +213,32 @@ final class CodexCardsTests: XCTestCase {
         XCTAssertEqual(answers?["改完以后怎么验证？"] as? String, "预发环境压测")
     }
 
+    /// The question with its capsules and the review in dark, and at the largest accessibility text size (#2970).
+    @MainActor func testTheReviewInDarkAndAtTheLargestSize() throws {
+        let hub = try hub()
+        for (name, extra) in [("dark", ["-ui.scheme", "dark"]),
+                              ("largest", ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"])] {
+            _ = try? Data(contentsOf: URL(string: hub + "/mock/reset")!)
+            for _ in 0..<2 { post(hub + "/api/v1/interactions/cxa_orders_curl/resolve", ["allow": true]) }
+            let app = XCUIApplication()
+            let pair = "persona://pair?url=" + hub.addingPercentEncoding(withAllowedCharacters: .alphanumerics)! + "&token=mock"
+            app.launchArguments = ["-pairURL", pair, "-openSession", orders] + extra
+            app.launchPersona()
+            XCTAssertTrue(anything(app, "订单列表的索引怎么加？").waitForExistence(timeout: 20), app.debugDescription)
+            shot("question-\(name)")
+            anything(app, "只给 user_id 加索引").tap()
+            XCTAssertTrue(anything(app, "改完以后怎么验证？").waitForExistence(timeout: 5))
+            anything(app, "预发环境压测").tap()
+            app.buttons["提交"].firstMatch.tap()
+            let submit = app.buttons["screen-review-submit"]
+            XCTAssertTrue(submit.waitForExistence(timeout: 5), "no review:\n\(app.debugDescription)")
+            shot("review-\(name)")
+            XCTAssertTrue(submit.isHittable || { app.swipeUp(); return submit.isHittable }(), "Submit can't be reached")
+            if name == "largest" { shot("review-largest-end") }
+            app.terminate()
+        }
+    }
+
     private func post(_ url: String, _ body: [String: Any]) {
         var req = URLRequest(url: URL(string: url)!)
         req.httpMethod = "POST"
