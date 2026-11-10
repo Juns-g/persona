@@ -131,14 +131,14 @@ Health answers are mostly a set of numbers, and a chart is faster to read than t
 | --- | --- | --- |
 | Per-day trends over the last 7 days (or longer): steps, sleep, weight, resting heart rate | `line` | Steps over the last 7 days |
 | Calories per meal (comparing a few items, calories burned per workout) | `bar` | Calories per meal today |
-| Daily calorie breakdown (how much each part takes of one total) | `stacked_bar` | Today's calories: breakfast / lunch / dinner / remaining |
+| Daily calorie breakdown (how much each part takes of one total) | `ring` (#3069; a `stacked_bar` card draws one bar and reads poorly for one day) | Today's calories: breakfast / lunch / dinner / remaining |
 | A single key metric | `stat` | Steps today |
 | Details (each food, each item on a lab report) | Markdown table | |
 
 - **Instructions**: in the Health space's CLAUDE.md (`server/internal/prompts/assistant/health_claude_md.md`, "讲数字默认配图表"): pick per the table above, put the conclusion and key numbers in the text with the card after it, at most three cards at a time, and do not fill days with no data with 0.
-  `TestHealthClaudeMDTeachesCharts` checks that all four card types have examples and that every example is a card all clients can draw.
+  `TestHealthClaudeMDTeachesCharts` checks that all four card types (`line`, `bar`, `ring`, `stat`) have examples, that none is a `stacked_bar`, and that every example is a card all clients can draw.
 - **Web**: a health chat is the assistant's chat page (`ChatView`); code blocks are drawn as charts via `ui/AssistantCard.tsx` as before, with no separate implementation. What each client draws is governed by the cases in `schema/extension/examples/persona-card/` (web: `lib/assistant-view.test.ts`).
-- **Lark**: cards cannot draw charts, and the JSON in a code block is not an answer either, so before sending, the bot rewrites each `persona-card` as a line or two of numbers (`stat` as one bold number, `line` / `bar` as a ▁▃█ sparkline plus the individual numbers, `stacked_bar` as a small two-column table); see `docs/extensions/bots.md` ("Cards").
+- **Lark**: cards cannot draw charts, and the JSON in a code block is not an answer either, so before sending, the bot rewrites each `persona-card` as a line or two of numbers (`stat` as one bold number, `line` / `bar` as a ▁▃█ sparkline plus the individual numbers, `stacked_bar` / `ring` as a small two-column table); see `docs/extensions/bots.md` ("Cards").
 
 To see it: in the default mock hub (`python3 scripts/mock/mock_hub.py`, numbers are made up), the Health space's three chats "Sleep this week", "Step goal" and "What I ate today" all have charts.
 
@@ -164,7 +164,7 @@ Checkup reports are usually PDFs dozens of pages long. If only the chat history 
   photos are still sent as images, and videos still go to the temporary directory. A hub / node older than #4546 returns 400 / "unknown upload destination"; the App reports the upload failed, which goes away after updating the hub.
 - **Entry point (#4656)**: with only the input box's `+`, it is not obvious you can upload, so the Health page has an explicit **Upload a Checkup Report**: on the web below the home input box, on iOS / Mac at the front of **Try Asking**.
   Tapping it picks a PDF or images (images are also uploaded as files, with the original kept in `reports/` as well). Once everything is uploaded, a health chat starts automatically (`views/health/reports.ts`, `FileUploads.startAll`) with the paths in the first message;
-  it still starts if you leave the page mid-upload. To test the whole path: iOS launch argument `-showReportUpload <file name>` (on the mock hub, look for `POST …/files?dest=health` and `POST /api/v1/assistant/conversations`).
+  it still starts if you leave the page mid-upload. To test the whole path: iOS launch argument `-showReportUpload <file name>[,<file name>…]` (on the mock hub, look for `POST …/files?dest=health` and `POST /api/v1/assistant/conversations`); with `-showReportUploadMB <n>` each file is that big and stays on its way a while.
 - **View and delete (#4998)**: **Checkup Reports** on the Health page lists reports in `reports/` (`server/internal/node/healthreports.go`): an original and its same-named `.md` record count as one report; record-only reports (photos sent in chat) count too.
   View the structured record, open the original or delete. Deletion is permanent and removes both original and record; **content already mentioned in chats and health memory is not deleted with them**, as the confirmation explains. Names must identify a single regular file in `reports/`; symlinks, directories and `../` are rejected.
   On the web it is on the home page (`views/health/HealthReports.tsx`); iOS / Mac use a separate page (`HealthReportsView.swift`). An old node returns 409 `node_outdated`, which the page displays. APIs live in `server/internal/devices/healthreports.go`, forwarded by hub (`devicewire.Routes`).
@@ -215,7 +215,12 @@ measurements are omitted; route coordinates are not uploaded. Pace charts requir
 measured splits and are not generated from the aggregate-only payload.
 
 The device atomically stores its HealthKit cursor with a bounded upload outbox.
-Failed uploads are retried on the next foreground visit. The assistant stores a
+Failed uploads are retried on the next foreground visit, except a report the hub
+rejects as invalid (HTTP 400, 413 or 422): the same data gets the same answer, so
+the device drops it and keeps going, and Settings → Health says some workouts were
+skipped. Without that, one bad report would hold back every later workout. The hub
+accepts end times up to a day past its own clock, so ordinary clock drift between
+the phone and the hub is never a rejection. The assistant stores a
 workout UUID receipt in PostgreSQL so retries, restarts, and deletion of an old task
 do not recreate it. Turning the switch off clears the local pending uploads; already
 accepted reports may still complete. Re-enabling starts a new consent window.

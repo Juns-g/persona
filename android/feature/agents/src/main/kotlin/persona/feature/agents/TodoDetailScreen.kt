@@ -1,5 +1,7 @@
 package persona.feature.agents
 
+import persona.core.domain.tasks.acceptedAtRest
+
 import persona.core.domain.tasks.hold
 import persona.feature.chat.ReviewChecklist
 import persona.core.designsystem.text
@@ -18,6 +20,7 @@ import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.style.TextOverflow
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import persona.core.contracts.AgentState
 import persona.core.contracts.CoreText
@@ -98,6 +101,7 @@ fun TodoDetailScreen(
     var editingNotes by remember { mutableStateOf(false) }
     var titleText by remember(todo.title) { mutableStateOf(todo.title) }
     var notesText by remember(todo.notes) { mutableStateOf(todo.notes) }
+    var saving by remember { mutableStateOf(false) }
     var pastFolded by rememberSaveable { mutableStateOf(true) }
 
     val sessionMap = remember(sessions) { sessions.associateBy { it.key } }
@@ -217,6 +221,9 @@ fun TodoDetailScreen(
                                 } else {
                                     JTag(stringResource(R.string.agents_todos_done))
                                 }
+                            } else if (todo.acceptedAtRest(sessionLookup)) {
+                                // accepted, then reopened by the hub with more work: still Accepted until a new review (#3156)
+                                JTag(stringResource(R.string.agents_todo_state_accepted), Tone.Positive)
                             } else {
                                 JTag(state.label)
                             }
@@ -273,19 +280,26 @@ fun TodoDetailScreen(
                                     notesText = todo.notes
                                     editingTitle = false
                                     editingNotes = false
-                                })
+                                }, enabled = !saving)
                                 Spacer(Modifier.width(Tokens.Space.s))
+                                // The hub refuses a blank title; the editor stays, with what was typed, until the save goes through.
                                 JButton(stringResource(R.string.agents_todo_save), onClick = {
-                                    editingTitle = false
-                                    editingNotes = false
+                                    if (saving || titleText.isBlank()) return@JButton
+                                    saving = true
                                     scope.launch {
                                         try {
                                             tasks?.updateTodo(todo.id, title = titleText.trim(), notes = notesText.trim())
+                                            editingTitle = false
+                                            editingNotes = false
+                                        } catch (e: CancellationException) {
+                                            throw e
                                         } catch (e: Exception) {
                                             onError(res.getString(R.string.agents_todo_save_failed, e.message.orEmpty()))
+                                        } finally {
+                                            saving = false
                                         }
                                     }
-                                })
+                                }, enabled = titleText.isNotBlank() && !saving, loading = saving)
                             }
                         } else if (todo.notes.isNotBlank()) {
                             Text(

@@ -64,10 +64,18 @@ nonisolated struct TerminalPanes: Decodable, Sendable, Equatable {
     }
 }
 
-/// What `panes/git` did: a one-line summary for the toast.
+/// What `panes/git` did: what came of it (`outcome`, said in the app's language, #1888), and the node's own one-line
+/// summary, which is all an older node sends.
 nonisolated struct PaneGitResult: Decodable, Sendable {
     var op: String?
+    var outcome: String?
     var message: String?
+}
+
+/// What `panes/agent` answers: the session it started in the pane (`docs/protocol/protocol.md`).
+nonisolated struct PaneAgentResult: Decodable, Sendable {
+    var sessionID: String?
+    enum CodingKeys: String, CodingKey { case sessionID = "session_id" }
 }
 
 extension APIClient {
@@ -85,7 +93,8 @@ extension APIClient {
 // MARK: - What the menus offer
 
 nonisolated enum NodeMenu {
-    /// Closing, splitting, running an agent in a shell and git are herdr's: Orca, herdr-core and botmux are not asked.
+    /// Closing, splitting, running an agent in a shell and git are herdr's: Orca, herdr-core, Tern and botmux are not
+    /// asked.
     static func canChange(hostKind: String?) -> Bool { hostKind == "herdr" }
 
     /// The pane items of an agent row: a live herdr pane the app may drive.
@@ -124,7 +133,20 @@ nonisolated enum NodeMenu {
             case .fetch: Theme.Icon.gitFetch
             }
         }
-        /// The toast after it ran: the node's one-line summary ("Already up to date"), or Done.
+        /// What came of it in the app's language (#1888); nil for an outcome this app doesn't know (an older node
+        /// sends none), which then shows the node's own words.
+        static func outcome(_ code: String?) -> String? {
+            switch code {
+            case "fetched": String(localized: "Remote updates fetched")
+            case "up_to_date": String(localized: "Already up to date")
+            case "pulled": String(localized: "Pulled the latest code")
+            case "nothing_to_push": String(localized: "No commits to push")
+            case "pushed": String(localized: "Pushed")
+            default: nil
+            }
+        }
+
+        /// The toast after it ran: what came of it, else the node's one-line summary, or Done.
         func done(_ message: String?) -> String {
             let m = message?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             let said = m.isEmpty ? String(localized: "Done [Extension System Presentation c0b3fb]") : m
@@ -181,6 +203,13 @@ nonisolated enum NodeMenu {
 
     /// Only the agents a launcher starts without a first message: Claude Code (a Codex start needs one).
     static func launchableHere(_ l: Launcher) -> Bool { (l.agent ?? "").isEmpty || l.agent == "claude" }
+
+    /// The chat of the agent Run Agent Here started on `machine`, from what `panes/agent` answered: it opens the way New
+    /// Session opens the one it starts (#3287). nil when the answer names no session: the list stays in front.
+    static func startedChat(_ answer: Data, on machine: MachineRef) -> SessionKey? {
+        let id = (try? JSON.decoder.decode(PaneAgentResult.self, from: answer))?.sessionID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return id.isEmpty ? nil : SessionKey(group: machine.group, machineID: machine.id, sessionID: id)
+    }
 }
 
 // MARK: - Doing it
@@ -248,7 +277,7 @@ final class NodeActions {
             do {
                 let data = try await api.nodeAction(machine: machine.id, "panes/git", body, timeout: 100)
                 let result = try? JSON.decoder.decode(PaneGitResult.self, from: data)
-                model.toast = Toast(op.done(result?.message), style: .success)
+                model.toast = Toast(op.done(NodeMenu.GitOp.outcome(result?.outcome) ?? result?.message), style: .success)
                 Haptics.success()
             } catch {
                 fail(String(localized: "\(op.title) failed"), error)
@@ -547,11 +576,14 @@ struct RunAgentHereSheet: View {
         Task {
             defer { busy = false }
             do {
-                try await api.nodeAction(machine: group.machineID, "panes/agent", ["pane": pane, "launcher": name], timeout: 130)
+                let answer = try await api.nodeAction(machine: group.machineID, "panes/agent", ["pane": pane, "launcher": name], timeout: 130)
                 model.toast = Toast(String(localized: "Started \(name) in the pane"), style: .success)
                 Haptics.success()
                 dismiss()
                 await model.refresh()
+                // Into the new agent's chat (#3287), as New Worktree's sheet opens the one it starts: after the refresh,
+                // so the chat comes up with its title and its computer.
+                if let started = NodeMenu.startedChat(answer, on: group.machineRef) { model.open(started) }
             } catch {
                 failure = String(localized: "Failed to start: \(error.shown ?? error.localizedDescription)")
                 Haptics.error()

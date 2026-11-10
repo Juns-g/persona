@@ -153,8 +153,14 @@ func (s *Service) startTaskAgent(ctx context.Context, t *PlanTask, retry bool) (
 	if len(t.DoneWhen) > 0 { // what the supervisor will check (supervise.go)
 		prompt += "\n\n" + prompts.RenderTaskDoneWhen(t.DoneWhen)
 	}
-	if !t.Readonly && s.doneNeedsDelivery(ctx) { // what done means: live and checked (delivery.go)
-		prompt += "\n\n" + prompts.RenderTaskDelivery()
+	// The closeout's form, up front (agents_closeout_brief.go): after the delivery line when both are asked for.
+	delivery := !t.Readonly && s.doneNeedsDelivery(ctx)
+	brief := s.closeoutBrief(ctx, delivery)
+	if delivery { // what done means: live and checked (delivery.go)
+		prompt += "\n\n" + prompts.RenderTaskDelivery(brief != "")
+	}
+	if brief != "" {
+		prompt += "\n\n" + brief
 	}
 	// The project background, and the todo's decisions (a task started again may have some), go before the prompt
 	// (#2820, #1618); the tab is named from the title.
@@ -169,20 +175,21 @@ func (s *Service) startTaskAgent(ctx context.Context, t *PlanTask, retry bool) (
 		params["model"] = t.Model
 	}
 	mode := t.Permission
-	if mode == "" {
-		mode = s.settings(ctx).DefaultPermissionMode
-		if mode == "" {
-			mode = "default"
-		}
+	if mode == "" { // a plan saved before task_plan settled it, or a task started another way (tasks_permission.go)
+		mode = s.taskPermission(ctx, m.ID, nil)
 	}
 	params["permission_mode"] = mode
 	if t.Ultracode != nil && *t.Ultracode {
 		params["ultracode"] = true
 	}
+	if t.inPane != "" { // a retry in the tab an earlier try did not start in (start_remedy.go)
+		params["in_pane"] = t.inPane
+	}
 	var res struct {
 		Session proto.Session `json:"session"`
 	}
 	picked, _ := params["launcher"].(string)
+	s.setPlanThen(ctx, m.ID, params)
 	if err := s.call(ctx, m.ID, DeviceSessionStart, params, &res); err != nil {
 		s.recordStartFailure(ctx, m.ID, s.startLauncher(ctx, picked), err)
 		return "", "", err

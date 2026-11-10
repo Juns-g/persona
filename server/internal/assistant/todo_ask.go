@@ -26,10 +26,11 @@ type todoAsk struct {
 }
 
 // listedTodo is a to-do as GET /api/v1/todos lists it: with its ask while one waits (none: no `ask`, which a client that
-// does not know it never reads).
+// does not know it never reads), and, while it is open and nobody works on it, why (`orphaned`, tasks_orphan.go).
 type listedTodo struct {
 	Todo
-	Ask *todoAsk `json:"ask,omitempty"`
+	Ask      *todoAsk    `json:"ask,omitempty"`
+	Orphaned *TodoOrphan `json:"orphaned,omitempty"`
 }
 
 // todoAsks are the open asks by to-do id, in the request's language: the ones the briefing lists (not passed, not ended,
@@ -73,6 +74,9 @@ func (s *Service) pushDecision(ctx context.Context, id string) bool {
 		Title: i18n.T(l, "assistant-reports.verdict_title", i18n.Args{"task": clip(oneLine(t.Title), 30)}),
 		Body:  verdictText(l, &a) + "\n" + recommendText(l, &a),
 		Todo:  &assistantwire.NotifyTodo{ID: id, AskedAt: a.AskedAt, Recommend: a.Recommend}}
+	if d := deadlineText(l, s.location(ctx), a.Deadline, a.Reversible, time.Now()); d != "" {
+		n.Body += "\n" + d
+	}
 	if err := s.hub.NotifyRequest(ctx, NotifyRequest{Notification: n}); err != nil {
 		s.logf("task %s: decision push: %v", id, err)
 		return false
