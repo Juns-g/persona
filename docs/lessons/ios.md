@@ -80,8 +80,21 @@ from colliding with its buttons.
   was the chat's own overlay, so in Persona's conversation the top bar, the switcher and their fog were drawn over it, and took the taps
   there. A message taller than the room below the bar but shorter than the safe area fit, so it did not scroll, and its first lines stayed
   under the bar; a longer one scrolled, but its start still ended up under the bar. The page that floats the bar draws the layer above it
-  (`MessageLiftHost`), as an Agents chat already had it with its header under the dimming. Moving a layer up a level loses the environment
-  set between the levels: the lifted copy brings what it needs from where it was pressed (`MessageLongPress`).
+  (`MessageLiftHost`), as an Agents chat already had it with its header under the dimming.
+- **A view drawn again elsewhere wraps differently unless it gets the same offer and the same environment.** The lifted copy was offered
+  the width the message took, rounded to pixels: a bubble that hugs its widest line then lacked a hair of that line, its last character
+  went to the next line and every line after it moved, the bubble narrowed and the extra line was cut by the old height. Drawn outside the
+  chat it also lost what the chat sets around its rows (the file scope that path links need, the conversation layout, MarkdownUI's soft
+  breaks, which `AssistantText` sets outside the pressable part). `RecordsOffer` keeps the proposal the chat made; `Offers` makes it again;
+  `EnvironmentCapture` reads the whole environment (`\.self`) at the press, for one frame only, since a view that holds `\.self` updates
+  on every change to any value in it. `UIGestureRecognizerRepresentableContext` has no `environment`, and `EnvironmentValues.fontDesign` is
+  not public (read `StyleSpec.current.fontDesign`).
+- **Selecting in place, keep the words on screen.** A text view drawing the words again (TextKit) wrapped them close to the chat but not
+  the same: fonts, list markers, block spacing and wrapping all moved. The chat's words stay, and the text view lies over them with its
+  text, links and pictures clear, for the highlight and handles only, wrapping at the width the words were offered. Its layout still has to
+  match for the highlight to land on the right words; `-showLiftLines` writes each line's position in the three states for the UI tests.
+- A `UIScrollView` subclass cannot have a property named `dragging`: its Objective-C getter is `isDragging`'s, and the override fails.
+  `Layout` methods are not on the main actor: what they write must be `nonisolated`.
 - **UIKit only scrolls a text view's own content while a selection handle is held at its edge.** With `isScrollEnabled = false` inside a
   SwiftUI `ScrollView`, the handle reaches the edge and the outer scroll view stays put. `LiftUITextView` follows the finger with a
   recognizer that never recognizes and cannot be prevented (`canBePrevented(by:)` false), treats a touch that changes the selection as a

@@ -8732,6 +8732,19 @@ LIFT_LONG = "a1f3c2d4-0000-4000-8000-0000000c1e09"
 LIFT_ASK = "b2e4d6f8-0000-4000-8000-0000000c1e09"
 LIFT_ASK_MID = "b2e4d6f8-0000-4000-8000-0000000c1e0a"
 LIFT_MIX = "a1f3c2d4-0000-4000-8000-0000000c1e0b"
+# The case a tester reported (#3188): an answer with inline code in its sentences, a long path in inline code that
+# wraps, a list, a code block, a quote and a link, after a message of yours with a path; in an Agents chat and in a
+# Persona conversation. Every style's position test lifts and selects both.
+LIFT_KEY = "a1f3c2d4-0000-4000-8000-0000000c1e0c"
+LIFT_ASK_KEY = "b2e4d6f8-0000-4000-8000-0000000c1e0c"
+LIFT_KEY_MINE = "你先把管理密钥存到本机文件，我跑命令读一下。放在 ~/.config/example-gateway/management.key，权限设成 600，别打印到日志里。"
+LIFT_KEY_ANSWER = ("管理 Key 已经存到本机（hub）了：\n`/home/me/.config/example-gateway/management.key`\n\n"
+                   "- 文件权限 600，内容 64 位，没有换行，以 `cb3b` 开头、`047f` 结尾。\n"
+                   "- 我用这个文件里的 Key 请求了网关的 `/api/admin/accounts`，返回 200，Key 是对的。\n\n"
+                   "在 hub 上运行下面这条就能看到明文：\n\n```sh\ncat ~/.config/example-gateway/management.key; echo\n```\n\n"
+                   "> 这个文件只有你的账号能读，备份里也不会带上。\n\n"
+                   "复制后粘贴到 设置 › 扩展 › 网关 的 Key 框里，再点保存，步骤见[扩展设置说明](https://example.com/docs/extensions)。"
+                   "存好之后要删掉这个文件就跟我说一声。")
 
 
 def mock_message_lift():
@@ -8788,6 +8801,10 @@ def mock_message_lift():
            "核对用的命令：\n\n```sh\nscripts/check.sh --since 1h --quiet\n```\n\n"
            "> 日报的模板改过一次，标题里的日期现在按北京时间写。\n\n下一次核对在整点之后五分钟。")
     ITEMS[LIFT_MIX] = [it("user", "text", 9, text=mine), it("assistant", "text", 7, text=mix)]
+    ITEMS[LIFT_KEY] = [it("user", "text", 6, text=LIFT_KEY_MINE), it("assistant", "text", 5, text=LIFT_KEY_ANSWER)]
+    SESSIONS.append(sess("macbook", LIFT_KEY, "保存管理密钥", repo, "done", "done", "shop-app", 17, "lift", 4, 5, "存好之后要删掉这个文件就跟我说一声。"))
+    ITEMS[LIFT_ASK_KEY] = [it("user", "text", 6, text=LIFT_KEY_MINE), it("assistant", "text", 5, text=LIFT_KEY_ANSWER)]
+    ASSISTANT.append(assistant_sess(LIFT_ASK_KEY, "保存管理密钥", 5, "存好之后要删掉这个文件就跟我说一声。"))
     SESSIONS.append(sess("macbook", LIFT_MIX, "定时核对", repo, "done", "done", "shop-app", 17, "lift", 3, 7, "下一次核对在整点之后五分钟。"))
 
 
@@ -9771,6 +9788,7 @@ FILES = {}
 if os.environ.get("MOCK_MESSAGE_LIFT") == "1":  # the paths in the lift's long message of yours are there (#3188)
     for _f in ("docs/review-queue.md", "notes/status.md", "docs/brief.md", "notes/runs/20261110T165351Z/snapshot.json"):
         FILES["/Users/me/code/shop-app/" + _f] = b"# placeholder\n"
+    FILES["/Users/me/.config/example-gateway/management.key"] = b"placeholder\n"
 VIDEO_READS = []
 VIDEO_READ_LOCK = threading.Lock()
 FILE_PAGE = 2 << 20
