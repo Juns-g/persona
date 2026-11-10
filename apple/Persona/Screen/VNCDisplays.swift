@@ -91,15 +91,6 @@ nonisolated struct VNCViewport: Equatable {
                 y: min(max(visible.minY, q.y), max(visible.minY, visible.maxY - 1)))
     }
 
-    /// The part of the framebuffer drawn inside `bounds` (the view's): all of `visible` when it fits, less when zoomed
-    /// in (#3067: updates are asked for this part only). Whole pixels, covering every one partly shown.
-    func onScreen(_ bounds: CGRect) -> CGRect {
-        let r = rect.intersection(bounds)
-        guard !r.isNull, !r.isEmpty else { return .zero }
-        let a = toScreen(r.origin), b = toScreen(CGPoint(x: r.maxX, y: r.maxY))
-        return CGRect(x: a.x, y: a.y, width: b.x - a.x, height: b.y - a.y).integral.intersection(visible)
-    }
-
     /// Where the whole framebuffer (of this size) is drawn, relative to `rect`'s origin, so that `visible` fills `rect`.
     func framebufferFrame(_ size: CGSize) -> CGRect {
         let k = rect.width / visible.width

@@ -15,7 +15,6 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"image"
 	"os"
 	"os/signal"
 	"syscall"
@@ -47,7 +46,7 @@ func main() {
 	privStep := fs.Int("step", 20, "private: encodings asked at once")
 	dumpEnc := fs.Int("enc", 1000, "dump: the encoding")
 	traceScene := fs.String("scene", "video", "trace: the bench page's scene")
-	traceArea := fs.String("trace-area", "", "trace: x,y,w,h: after the first update, ask for this part only")
+	traceArea := fs.String("trace-area", "", "trace: after the first update, ask for this part only: x,y,w,h, page (the bench page) or stage (where the scene draws)")
 	dumpN := fs.Int("n", 256, "dump: bytes shown")
 	dumpOut := fs.String("raw", "", "dump: also write every byte that came to this file")
 	relayPort := fs.Int("port", 38777, "relay: the echo server's port on this machine")
@@ -84,16 +83,7 @@ func main() {
 	case "dump":
 		err = dump(ctx, t, cred, int32(*dumpEnc), *dumpN, 3*time.Second, *dumpOut)
 	case "trace":
-		var area image.Rectangle
-		if *traceArea != "" {
-			var x, y, w, h int
-			if _, serr := fmt.Sscanf(*traceArea, "%d,%d,%d,%d", &x, &y, &w, &h); serr == nil {
-				area = image.Rect(x, y, x+w, y+h)
-			}
-		}
-		err = trace(ctx, t, cred, *traceScene, *recMode, *recFor, area)
-	case "area":
-		err = areaTest(ctx, t, cred, "Safari")
+		err = trace(ctx, t, cred, *traceScene, *recMode, *recFor, *traceArea)
 	case "private":
 		probePrivate(ctx, t, cred, int32(*privLo), int32(*privHi), int32(*privStep))
 	case "record":
@@ -107,7 +97,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: vncbench probe|private|dump|shot|area|trace|run|record|relay [flags]  (vncbench run -h for its flags)")
+	fmt.Fprintln(os.Stderr, "usage: vncbench probe|private|dump|shot|trace|run|record|relay [flags]  (vncbench run -h for its flags)")
 	os.Exit(2)
 }
 

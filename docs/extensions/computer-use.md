@@ -285,11 +285,11 @@ Picture in Picture (`AVSampleBufferDisplayLayer`) needs access to each frame, wh
     1000 (1-bit), 1001 (4-bit grey), 1002 (16-bit colour through zlib, larger than ZRLE at 16 bits) and 1011, a
     DCT codec of its own (a tenth of ZRLE's bytes) whose entropy coding is undocumented; 1101, 1107, 1109 and 1110 carry
     the display layout, formats, the keyboard layout and the model. Asked for 100 or more encodings at once it answers
-    nothing. So lossless ZRLE is the most a standard client gets; fewer bytes come from asking for less (below).
+    nothing. So lossless ZRLE is the most a standard client gets.
   - One zlib stream for ZRLE over the whole connection, using Compression raw DEFLATE after skipping the two-byte zlib header (`RFBInflater`).
   - All five ZRLE tile types: raw, solid, packed palette, plain RLE, palette RLE, written into the framebuffer a row at a time (#3067).
   - When an update is one small rectangle (its bytes, known from its header, at most `RFBClient.earlyLimit`, 64 KB), the next incremental FramebufferUpdateRequest goes out before its data is read: the server gathers the next update while this one crosses the network and is drawn (#3067; typing over a 50 ms, 30 Mbit/s link: p50 latency 629 → 431 ms). A bigger update's follower is asked for once it is in, as before: a request that reaches macOS's server while it is still writing a big update makes it go quiet for up to two seconds (measured: video at 1.8 frames a second instead of 5.3 when every request went out early). After a size change mid-update, a whole-screen request for the new size follows.
-  - Requests are for the part of the framebuffer shown, 64 pixels around it (`RFBClient.ask(for:)`, `RFBSession.shows`, #3067): zoomed in, or one display of several, the rest is not sent. A layer that shows all of it (the small window, the Mac app) means all of it. macOS keeps track of what changed outside the part asked for and sends it with the first incremental request that covers it again (measured: SSIM 1 against a lossless copy), so a part coming into view is asked for at once, incrementally, not whole.
+  - Requests always cover the whole framebuffer, also when zoomed in or showing one display of several (#3067): macOS's Screen Sharing leaves most incremental requests for less unanswered while that part changes (`vncbench trace -trace-area`: the bench page's part, a full-width band not starting at the top, or anything 1850 of 1920 pixels wide got no updates for 5 s while video played inside it, nor the page's own redraws; only near-whole requests from the top worked), so asking for the part shown would freeze a zoomed-in picture.
   - Fence (248) requests are answered (no flags, same data); EndOfContinuousUpdates (150) is taken.
 - **Showing frames** (`RFBFrameSink`, #3067): at most 60 a second, into IOSurface-backed pixel buffers from a pool. Each buffer the pool has handed out keeps the region that changed since it was last filled (by its IOSurface id; the client's damage comes with the framebuffer, `RFBClient.withDamage`), and a frame copies only that region: a new buffer, or one the pool let go and handed out again, is filled whole. The page's fps / latency numbers are reported at most four times a second, so the page doesn't redraw for every frame.
 - **Sending back**: pointer (button bits: left, middle, right, wheel up/down), keys (keysym), clipboard (ClientCutText; RFB only carries Latin-1, other characters go through the node, see "Clipboard" below).
@@ -304,7 +304,7 @@ Picture in Picture (`AVSampleBufferDisplayLayer`) needs access to each frame, wh
     - complete scripted session, outgoing bytes checked byte for byte;
     - ARD handshake and rejected login;
     - pointer, key and clipboard bytes and order (pre-handshake messages after handshake; 120 messages in original order).
-  - `RFBFrameTests` (#3067): region merging, the outbox folding motion but not presses, releases or notches and ending on cancel, the frame sink copying only what changed with every pixel matching the framebuffer, the next request going out before a small update's data is read and after a big one's, Fence and EndOfContinuousUpdates, requests carrying the part shown (the view's on-screen part, a part that grows asked for at once, the session's union with its margin).
+  - `RFBFrameTests` (#3067): region merging, the outbox folding motion but not presses, releases or notches and ending on cancel, the frame sink copying only what changed with every pixel matching the framebuffer, the next request going out before a small update's data is read and after a big one's, Fence and EndOfContinuousUpdates.
   - Mock `MOCK_SCREEN=fake` now offers ARD first like macOS (DH in Python, AES with openssl), then ZRLE or Raw as the client requests. It records pointer, clicks, wheel and clipboard (read at `/mock/screen-password`; `?clip=…` sends clipboard to the client). `MOCK_SCREEN_ANIMATE=1` moves a square at about 30 frames per second to measure frame rate.
 
 ### Measuring (#3067)
@@ -316,11 +316,13 @@ It signs in with the login keychain's generic password `persona-vnc-bench` (adde
 
 - `probe`: which image encodings, pseudo-encodings and pixel formats the server answers with, Apple's private range
   included, and Tight's bytes and SSIM / PSNR at each quality level against lossless ZRLE.
-- `run -scenes idle,type,scroll,drag,video -config <encodings> -mode stopwait|early|pipeline|continuous`: a bench page of
+- `run -scenes idle,type,scroll,drag,video -config <encodings> -mode stopwait|gated|early|pipeline|continuous`: a bench page of
   its own shown in a browser on that Mac; per scene the Mbit/s, updates a second, input-to-pixels latency (the page's
   marker changing colour, split into getting the input and drawing it back), and the picture's SSIM / PSNR against a
   second, lossless connection of the same moment. `-delay` and `-rate` add a phone link's latency and bandwidth.
 - `record`: what the server sends, for replaying through the app's own client (decode CPU, bytes copied).
+- `trace -scene <scene> -rec-mode <mode> [-trace-area x,y,w,h|page|stage]`: each request and each update's start, end,
+  size and painted box in order, to see how the server answers a way of asking (or a part of the screen).
 - `relay`: an echo server of its own behind the hub's port relay: small-message round trips and throughput, hop by hop
   when run on the hub and on the node in turn.
 

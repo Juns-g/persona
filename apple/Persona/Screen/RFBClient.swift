@@ -191,10 +191,6 @@ nonisolated final class RFBClient: @unchecked Sendable {
     private let reader: RFBReader
     private let credentials: @Sendable () async -> Credentials?
     private(set) var framebuffer = RFBFramebuffer(width: 1, height: 1)
-    /// The part of the framebuffer updates are asked for (nil: all of it): what the views show (#3067). areaLock
-    /// guards it (set from the views, read where requests are made).
-    private let areaLock = NSLock()
-    private var area: CGRect?
     /// Held while an update writes the framebuffer: whoever copies it out takes it too (withFramebuffer).
     private let framebufferLock = NSLock()
 
@@ -283,33 +279,16 @@ nonisolated final class RFBClient: @unchecked Sendable {
         send([6, 0, 0, 0] + RFBAuth.be32(UInt32(bytes.count)) + bytes)
     }
 
-    /// Asks for what is shown again whole (a non-incremental update): the Mac answers even when nothing changed, so a
+    /// Asks for the whole screen again (a non-incremental update): the Mac answers even when nothing changed, so a
     /// connection that went away without saying so shows up as no frame (#4380).
     func refresh() { send(requestBytes(incremental: false)) }
 
-    /// Updates from now on for this part of the framebuffer only (nil: all of it), as the views show it (#3067):
-    /// zoomed in, or one display of several, the rest of the screen is not sent. macOS's Screen Sharing keeps track
-    /// of what changed outside the part asked for and sends it once that part is asked for again, so a part that
-    /// comes into view needs no whole request: an incremental one for the new part goes out at once.
-    func ask(for r: CGRect?) {
-        let grew: Bool = areaLock.withLock {
-            let old = area
-            area = r
-            guard let r else { return old != nil }
-            guard let old else { return false }
-            return !old.contains(r)
-        }
-        if grew { send(requestBytes(incremental: true)) }
-    }
-
-    /// A FramebufferUpdateRequest for the part asked for, on the framebuffer as it is now.
+    /// A FramebufferUpdateRequest for the whole framebuffer as it is now. Never a part of it, even when the views show
+    /// less (#3067): macOS's Screen Sharing leaves a request narrower than the screen, or one not starting at its top,
+    /// unanswered while the part changes.
     private func requestBytes(incremental: Bool) -> [UInt8] {
-        let (w, h) = withFramebuffer { ($0.width, $0.height) }
-        let whole = CGRect(x: 0, y: 0, width: w, height: h)
-        var r = (areaLock.withLock { area } ?? whole).integral.intersection(whole)
-        if r.isNull || r.isEmpty { r = whole }
-        func be16(_ v: CGFloat) -> [UInt8] { let n = UInt16(clamping: Int(v)); return [UInt8(n >> 8), UInt8(n & 0xff)] }
-        return [3, incremental ? 1 : 0] + be16(r.minX) + be16(r.minY) + be16(r.width) + be16(r.height)
+        let (w, h) = withFramebuffer { (UInt16(clamping: $0.width), UInt16(clamping: $0.height)) }
+        return [3, incremental ? 1 : 0, 0, 0, 0, 0, UInt8(w >> 8), UInt8(w & 0xff), UInt8(h >> 8), UInt8(h & 0xff)]
     }
 
     private func send(_ bytes: [UInt8]) { outbox.send(bytes) }
@@ -347,7 +326,6 @@ nonisolated final class RFBClient: @unchecked Sendable {
         for e in Self.encodings { setEncodings += RFBAuth.be32(UInt32(bitPattern: e)) }
         try await transport.send(setEncodings)
         onState(.live(width: width, height: height, name: name))
-        // The whole screen first, whatever is shown: what isn't asked for stays black until it is.
         try await transport.send([3, 0, 0, 0, 0, 0, UInt8(width >> 8), UInt8(width & 0xff), UInt8(height >> 8), UInt8(height & 0xff)])
     }
 

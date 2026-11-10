@@ -126,11 +126,6 @@ final class VNCScreenUIView: UIView, UIGestureRecognizerDelegate {
         clip.frame = port.rect
         display.frame = port.framebufferFrame(screenSize)
         if let s = session {
-            // Updates only for what is on the screen (#3067): all of it when fitted on all displays.
-            if s.size.width > 0, window != nil, !bounds.isEmpty {
-                let part = port.onScreen(bounds)
-                s.shows(part.isEmpty || part.size == s.size ? nil : part, in: display)
-            }
             let at = toView(s.pointer)
             if let c = s.cursor, c.width > 0, let image = Self.image(c) {
                 let scale = 1 / port.pixelsPerPoint

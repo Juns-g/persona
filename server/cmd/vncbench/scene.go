@@ -876,91 +876,10 @@ func recordOnly(ctx context.Context, t target, cred credentials, config, mode, p
 	return nil
 }
 
-// areaTest checks how the server treats a client that asks for part of the screen only (the app asking for what its
-// view shows): while the page's video plays, the test connection asks for updates of a strip above the video only;
-// then the video stops and it asks (incrementally) for the whole screen again. Whether the video's last picture
-// then arrives says if the server kept track of what changed outside the part asked for, or if the client must ask
-// for such a part whole.
-func areaTest(ctx context.Context, t target, cred credentials, browser string) error {
-	b, err := newBench()
-	if err != nil {
-		return err
-	}
-	b.browser = browser
-	b.set("video", false)
-	if err := b.show(); err != nil {
-		return err
-	}
-	ref, err := open(ctx, target{Addr: t.Addr, Hub: t.Hub, Machine: t.Machine, Token: t.Token}, cred, pf32, appEncodings, "stopwait", nil)
-	if err != nil {
-		return err
-	}
-	defer ref.Close()
-	lay, err := ensure(b, ref, "video")
-	if err != nil {
-		return err
-	}
-	strip := image.Rect(0, 0, ref.Width, max(1, lay.stage().Min.Y-1))
-	c, err := connect(ctx, t, cred, pf32, appEncodings, nil)
-	if err != nil {
-		return err
-	}
-	test := &probeConn{}
-	test.session = start(c, "none")
-	defer test.Close()
-	var mu sync.Mutex
-	area := c.Whole()
-	c.OnUpdate = func(u updateInfo) {
-		test.mu.Lock()
-		test.samples = append(test.samples, markerSample{u.End, 0})
-		test.mu.Unlock()
-		test.session.mu.Lock()
-		test.session.updates = append(test.session.updates, u)
-		test.session.cond.Broadcast()
-		test.session.mu.Unlock()
-		mu.Lock()
-		a := area
-		mu.Unlock()
-		_ = c.Request(true, a)
-	}
-	_ = c.Request(false, c.Whole())
-	test.waitUpdates(1, 10*time.Second)
-	time.Sleep(time.Second)
-	in0 := c.BytesIn()
-	time.Sleep(4 * time.Second)
-	whole := c.BytesIn() - in0
-	mu.Lock()
-	area = strip
-	mu.Unlock()
-	time.Sleep(time.Second)
-	in1 := c.BytesIn()
-	time.Sleep(4 * time.Second)
-	part := c.BytesIn() - in1
-	b.set("video", true) // the video stops on its last picture
-	time.Sleep(time.Second)
-	mu.Lock()
-	area = c.Whole()
-	mu.Unlock()
-	_ = c.Request(true, c.Whole())
-	test.settle(500*time.Millisecond, 5*time.Second)
-	ref.settle(500*time.Millisecond, 5*time.Second)
-	video := lay.stage()
-	q := compare(test.Snapshot(), ref.Snapshot(), video)
-	fmt.Printf("whole screen asked: %.2f Mbit/s; only the strip above the video (%v): %.2f Mbit/s\n",
-		float64(whole)*8/4e6, strip, float64(part)*8/4e6)
-	fmt.Printf("after asking for the whole screen again, incrementally: the video's area against a lossless copy: SSIM %.4f, PSNR %.1f dB\n", q.SSIM, q.PSNR)
-	_ = c.Request(false, video)
-	test.settle(500*time.Millisecond, 5*time.Second)
-	q2 := compare(test.Snapshot(), ref.Snapshot(), video)
-	fmt.Printf("after asking for the video's area whole: SSIM %.4f, PSNR %.1f dB\n", q2.SSIM, q2.PSNR)
-	b.set("idle", false)
-	return nil
-}
-
 // trace runs one scene on a connection asking as mode does and prints, in order, each request going out and each
 // update's start, end, size and painted area, in milliseconds from the start: how the server answers each way of
 // asking.
-func trace(ctx context.Context, t target, cred credentials, scene, mode string, d time.Duration, area image.Rectangle) error {
+func trace(ctx context.Context, t target, cred credentials, scene, mode string, d time.Duration, areaSpec string) error {
 	b, err := newBench()
 	if err != nil {
 		return err
@@ -997,17 +916,38 @@ func trace(ctx context.Context, t target, cred credentials, scene, mode string, 
 	}
 	c.OnUpdate = func(u updateInfo) {
 		mu.Lock()
-		lines = append(lines, fmt.Sprintf("%9.1f update ends: %d bytes, %d rects, %d px painted, took %.1f ms", stamp(), u.Bytes, u.Rects, u.Area,
-			float64(u.End.Sub(u.Start).Microseconds())/1000))
+		lines = append(lines, fmt.Sprintf("%9.1f update ends: %d bytes, %d rects, %d px painted in %v, took %.1f ms", stamp(), u.Bytes, u.Rects,
+			u.Area, u.Dirty, float64(u.End.Sub(u.Start).Microseconds())/1000))
 		mu.Unlock()
 		inner(u)
 	}
 	if err := p.first(); err != nil {
 		return err
 	}
-	if !area.Empty() {
+	if areaSpec != "" {
 		// Once the first (whole) update is in, only this part from then on.
 		p.waitUpdates(1, 10*time.Second)
+		var area image.Rectangle
+		switch areaSpec {
+		case "page", "stage":
+			lay, err := ensure(b, p, scene)
+			if err != nil {
+				return err
+			}
+			area = lay.View
+			if areaSpec == "stage" {
+				area = lay.stage()
+			}
+		default:
+			var x, y, w, h int
+			if _, err := fmt.Sscanf(areaSpec, "%d,%d,%d,%d", &x, &y, &w, &h); err != nil {
+				return fmt.Errorf("-trace-area %q: want x,y,w,h, page or stage", areaSpec)
+			}
+			area = image.Rect(x, y, x+w, y+h)
+		}
+		mu.Lock()
+		lines = append(lines, fmt.Sprintf("%9.1f from now on asking for %v only", stamp(), area))
+		mu.Unlock()
 		p.area.Store(area)
 		_ = c.Request(true, area)
 	}

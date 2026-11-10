@@ -1,4 +1,3 @@
-import AVFoundation
 import CoreGraphics
 import CoreVideo
 import Foundation
@@ -6,8 +5,7 @@ import Testing
 @testable import Persona
 
 /// The live screen's cheaper paths (#3067): the damage a frame copies (RFBRegion), the frame sink copying only that
-/// into the buffers it reuses, the outbox folding pointer motion, the next update asked for as an update starts, and
-/// updates asked for only for the part shown.
+/// into the buffers it reuses, the outbox folding pointer motion, and the next update asked for as a small update starts.
 struct RFBFrameTests {
     // MARK: RFBRegion
 
@@ -185,68 +183,6 @@ struct RFBFrameTests {
         #expect(frames.n == 1, "still reading after both")
         #expect(t.sent.contains([248, 0, 0, 0, 0, 0, 0, 0, 3, 7, 8, 9]))
         client.close()
-    }
-
-    // MARK: Asking for what is shown
-
-    @Test func viewportSaysWhatIsOnScreen() {
-        let fitted = VNCViewport(visible: CGRect(x: 0, y: 0, width: 1920, height: 1080), rect: CGRect(x: 0, y: 100, width: 400, height: 225))
-        #expect(fitted.onScreen(CGRect(x: 0, y: 0, width: 400, height: 800)) == CGRect(x: 0, y: 0, width: 1920, height: 1080))
-        // Zoomed in twice over the view's middle: the middle half of each side.
-        let zoomed = VNCViewport(visible: CGRect(x: 0, y: 0, width: 1920, height: 1080), rect: CGRect(x: -200, y: -112.5, width: 800, height: 450))
-        #expect(zoomed.onScreen(CGRect(x: 0, y: 0, width: 400, height: 225)) == CGRect(x: 480, y: 270, width: 960, height: 540))
-        // One display of two: never past it.
-        let one = VNCViewport(visible: CGRect(x: 1920, y: 0, width: 1920, height: 1080), rect: CGRect(x: 0, y: 0, width: 400, height: 225))
-        #expect(one.onScreen(CGRect(x: 0, y: 0, width: 400, height: 225)) == CGRect(x: 1920, y: 0, width: 1920, height: 1080))
-    }
-
-    /// Requests carry the part asked for; a part that grows is asked for at once (incrementally: the server sends what
-    /// changed there meanwhile), and back to all of it the same way.
-    @Test func requestsCarryThePartShown() async throws {
-        let t = PacedTransport(Self.greeting(100, 50) + [Self.raw(0, 0, 1, 1, [1, 2, 3, 0])], every: .milliseconds(5), holds: true)
-        let client = RFBClient(transport: t) { nil }
-        let frames = Counter()
-        client.onFrame = { _, _ in frames.add() }
-        client.start()
-        for _ in 0..<200 where frames.n == 0 { try await Task.sleep(for: .milliseconds(10)) }
-        func req(_ inc: UInt8, _ x: Int, _ y: Int, _ w: Int, _ h: Int) -> [UInt8] { [3, inc] + Self.u16(x) + Self.u16(y) + Self.u16(w) + Self.u16(h) }
-        #expect(t.sent.contains(req(0, 0, 0, 100, 50)), "the whole screen first")
-        let before = t.sent.count
-        client.ask(for: CGRect(x: 10, y: 5, width: 20, height: 10)) // smaller: nothing at once
-        try await Task.sleep(for: .milliseconds(100))
-        #expect(t.sent.count == before)
-        client.ask(for: CGRect(x: 10, y: 5, width: 40, height: 20)) // grew: asked for now
-        try await Task.sleep(for: .milliseconds(100))
-        #expect(t.sent.last == req(1, 10, 5, 40, 20))
-        client.ask(for: nil)
-        try await Task.sleep(for: .milliseconds(100))
-        #expect(t.sent.last == req(1, 0, 0, 100, 50), "all of it again")
-        client.refresh()
-        try await Task.sleep(for: .milliseconds(100))
-        #expect(t.sent.last == req(0, 0, 0, 100, 50))
-        client.close()
-    }
-
-    /// The session asks for what its layers show together, with a margin; a layer showing all of it (the small
-    /// window's) means all of it.
-    @MainActor @Test func sessionAsksForWhatItsLayersShow() async throws {
-        let t = PacedTransport(Self.greeting(1000, 500), every: .milliseconds(5), holds: true)
-        let session = RFBSession(ref: MachineRef(id: "mac"))
-        defer { session.close() }
-        session.run(RFBClient(transport: t) { nil })
-        for _ in 0..<300 where session.phase != .live { try await Task.sleep(for: .milliseconds(10)) }
-        let page = AVSampleBufferDisplayLayer(), small = AVSampleBufferDisplayLayer()
-        session.show(in: page)
-        #expect(session.shownPart == nil)
-        session.shows(CGRect(x: 100, y: 100, width: 200, height: 100), in: page)
-        let m = RFBSession.margin
-        #expect(session.shownPart == CGRect(x: 100 - m, y: 100 - m, width: 200 + 2 * m, height: 100 + 2 * m))
-        session.show(in: small, timed: true)
-        #expect(session.shownPart == nil, "the small window shows all of it")
-        session.hide(from: small)
-        #expect(session.shownPart != nil)
-        session.shows(nil, in: page)
-        #expect(session.shownPart == nil)
     }
 }
 
