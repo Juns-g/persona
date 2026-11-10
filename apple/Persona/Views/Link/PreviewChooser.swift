@@ -302,7 +302,7 @@ private struct PreviewStartSheet: View {
             VStack(spacing: Theme.Space.m) {
                 Button { Haptics.tap(); start() } label: {
                     Group {
-                        if busy { ProgressView().tint(Theme.onSolid) } else { Text("Start").lineLimit(1) }
+                        if busy { ProgressView().tint(Theme.onSolid) } else { Text("Start [Preview]").lineLimit(1) }
                     }
                     .font(Theme.Font.heading)
                     .scaledFrame(maxWidth: .infinity, minHeight: Theme.Size.wellS)
