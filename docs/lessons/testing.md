@@ -843,6 +843,9 @@ To check that a failure is this, move `dev.json` aside in the app's data contain
 - The Mac other lanes build on runs at a load average of 100–260 on 20 cores. The same path's small-message round
   trip moved between 6 and 47 ms (p50) within minutes, and a hub redeploy by another lane can land mid-run (check the
   hub processes' `etime`). Compare by interleaving the variants, several rounds, medians, with the load average logged.
+- A result from a loaded machine can reverse once it is quiet: at a load of ~400, asking for VNC updates early looked
+  239 ms faster for typing (3 of 6 pairs); at 25–80 it was slower in all 5 pairs (median +81 ms). Decide on runs made at
+  a low load, interleaved (ABBA), and say the load next to the numbers.
 - Driving the real desktop (`server/cmd/vncbench run`): other lanes' windows and dialogs open on top of yours at any
   time. Send a click, a wheel notch or a drag only where your own page is seen on the screen (vncbench's target
   checker), type only while your page says it has the keyboard, and bring your browser forward with `open -a`, never

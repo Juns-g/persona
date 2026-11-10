@@ -347,3 +347,11 @@ Each page has its own `NSHostingView`, with `isHidden` set while inactive. Pitfa
 - Asking for part of the screen would freeze a zoomed-in picture, so the app always asks for the whole framebuffer.
   Before relying on a server behavior, trace the case that must work (the area containing the change):
   `vncbench trace -trace-area page|stage|x,y,w,h` prints each request and each update's painted box.
+
+## Screen Sharing answers a request sent early later (2026-11-11, #3067)
+
+- Sending the next FramebufferUpdateRequest before the current update is read looks like it saves a round trip.
+  On macOS's Screen Sharing it doesn't: asked for as each update starts, it goes quiet for up to 2 s whenever the
+  request arrives while it is still writing a big update; asked for early only after a single rectangle of at most
+  64 KB, typed text still came back later (p50 374 ms against 215 for stop-and-wait over a 25 ms, 30 Mbit/s link,
+  slower in all 5 interleaved pairs, median +81 ms). The app asks for the next update once one is in (`RFBFrameTests.nextUpdateIsAskedOnceAnUpdateIsIn`).

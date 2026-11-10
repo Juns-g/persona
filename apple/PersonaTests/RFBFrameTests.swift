@@ -5,7 +5,7 @@ import Testing
 @testable import Persona
 
 /// The live screen's cheaper paths (#3067): the damage a frame copies (RFBRegion), the frame sink copying only that
-/// into the buffers it reuses, the outbox folding pointer motion, and the next update asked for as a small update starts.
+/// into the buffers it reuses, the outbox folding pointer motion, and the next update asked for once one is in.
 struct RFBFrameTests {
     // MARK: RFBRegion
 
@@ -127,32 +127,12 @@ struct RFBFrameTests {
         client.close()
     }
 
-    /// The follower of a small update is asked for as soon as its size is known, before its data: the transport
-    /// holds the data back until it has seen that request.
-    @Test func nextUpdateIsAskedBeforeASmallOneIsRead() async throws {
+    /// The next update is asked for once this one is in, even a small one (#3067: asked for as an update started,
+    /// macOS's Screen Sharing answered typing later, and went quiet for seconds when it was still writing a big one).
+    @Test func nextUpdateIsAskedOnceAnUpdateIsIn() async throws {
         var script = Self.greeting(8, 8)
         let update = Self.raw(0, 0, 8, 8, [1, 2, 3, 0])
         script.append(Array(update.prefix(4 + 12))) // the update's header and its rectangle's
-        script.append(Array(update.dropFirst(4 + 12)))
-        let t = PacedTransport(script, every: .milliseconds(5)) { sent, next in
-            // The data (the script's sixth part) only once an incremental request followed the whole-screen one.
-            next < 5 || sent.contains { $0.count == 10 && $0[0] == 3 && $0[1] == 1 }
-        }
-        let client = RFBClient(transport: t) { nil }
-        let frames = Counter()
-        client.onFrame = { _, _ in frames.add() }
-        client.start()
-        for _ in 0..<200 where frames.n == 0 { try await Task.sleep(for: .milliseconds(10)) }
-        #expect(frames.n == 1, "the update was drawn: its follower was asked for before its data was read")
-        client.close()
-    }
-
-    /// A big update's follower is asked for once it is in (#3067: macOS goes quiet for seconds when a request reaches
-    /// it while it is still writing a big update).
-    @Test func nextUpdateIsAskedAfterABigOneIsRead() async throws {
-        var script = Self.greeting(200, 100)
-        let update = Self.raw(0, 0, 200, 100, [1, 2, 3, 0]) // 80 000 bytes, past earlyLimit
-        script.append(Array(update.prefix(4 + 12)))
         script.append(Array(update.dropFirst(4 + 12)))
         let t = PacedTransport(script, every: .milliseconds(20), holds: true)
         let client = RFBClient(transport: t) { nil }
@@ -166,24 +146,6 @@ struct RFBFrameTests {
         #expect(incremental != nil && data != nil && incremental! > data!, "asked for after the data: \(t.events)")
         client.close()
     }
-
-    /// EndOfContinuousUpdates and Fence (#3067: asked for with ContinuousUpdates): taken, a Fence request answered
-    /// with its data and no flags, the session going on.
-    @Test func fenceIsAnsweredAndEndOfContinuousUpdatesTaken() async throws {
-        var script = Self.greeting(4, 4)
-        script.append([150])
-        script.append([248, 0, 0, 0] + RFBAuth.be32(0x8000_0002) + [3, 7, 8, 9])
-        script.append(Self.raw(0, 0, 1, 1, [1, 2, 3, 0]))
-        let t = PacedTransport(script, every: .milliseconds(5))
-        let client = RFBClient(transport: t) { nil }
-        let frames = Counter()
-        client.onFrame = { _, _ in frames.add() }
-        client.start()
-        for _ in 0..<200 where frames.n == 0 { try await Task.sleep(for: .milliseconds(10)) }
-        #expect(frames.n == 1, "still reading after both")
-        #expect(t.sent.contains([248, 0, 0, 0, 0, 0, 0, 0, 3, 7, 8, 9]))
-        client.close()
-    }
 }
 
 nonisolated private final class Counter: @unchecked Sendable {
@@ -193,26 +155,23 @@ nonisolated private final class Counter: @unchecked Sendable {
     func add() { lock.withLock { count += 1 } }
 }
 
-/// A server that says each part of its script `every` apart, then closes; `gate` (what was sent, the part's index)
-/// holds a part back until it says yes, and the connection fails if it never does.
+/// A server that says each part of its script `every` apart, then closes.
 nonisolated private final class PacedTransport: RFBTransport, @unchecked Sendable {
     private let lock = NSLock()
     private var script: [[UInt8]]
     private var _sent: [[UInt8]] = []
     private var at = 0
     private let every: Duration
-    private let gate: @Sendable ([[UInt8]], Int) -> Bool
     var sent: [[UInt8]] { lock.withLock { _sent } }
     var done: Bool { lock.withLock { at >= script.count } }
 
     /// holds: once the script is said, it stays open (and quiet) instead of closing.
     private let holds: Bool
 
-    init(_ script: [[UInt8]], every: Duration, holds: Bool = false, gate: @escaping @Sendable ([[UInt8]], Int) -> Bool = { _, _ in true }) {
+    init(_ script: [[UInt8]], every: Duration, holds: Bool = false) {
         self.script = script
         self.every = every
         self.holds = holds
-        self.gate = gate
     }
 
     func send(_ bytes: [UInt8]) async throws {
@@ -229,9 +188,6 @@ nonisolated private final class PacedTransport: RFBTransport, @unchecked Sendabl
     func receive() async throws -> [UInt8] {
         try await Task.sleep(for: every)
         while holds, lock.withLock({ at >= script.count }) { try await Task.sleep(for: .milliseconds(20)) }
-        for _ in 0..<100 where !lock.withLock({ gate(_sent, at) }) { try await Task.sleep(for: .milliseconds(10)) }
-        // Still shut after a second: the client never sent what the gate waits for, and the server hangs up.
-        guard lock.withLock({ gate(_sent, at) }) else { throw URLError(.timedOut) }
         return try lock.withLock {
             guard at < script.count else { throw URLError(.networkConnectionLost) }
             defer { at += 1 }
