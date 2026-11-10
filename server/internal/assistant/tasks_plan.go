@@ -26,14 +26,20 @@ type planTaskIn struct {
 // toolTaskPlanFrom is task_plan from the conversation sessionID running on machine (where its attachments are).
 func (s *Service) toolTaskPlanFrom(ctx context.Context, machine, sessionID string, args json.RawMessage) (string, error) {
 	var in struct {
-		Tasks []planTaskIn `json:"tasks"`
+		Tasks      []planTaskIn `json:"tasks"`
+		Supervisor string       `json:"supervisor"`
 	}
 	if err := json.Unmarshal(args, &in); err != nil {
 		return "", fmt.Errorf("tasks: %v", err)
 	}
+	lead, err := s.planSupervisor(ctx, sessionID, in.Supervisor)
+	if err != nil {
+		return "", err
+	}
 	var a struct{ Tasks []PlanTask }
 	for _, t := range in.Tasks {
 		t.PlanTask.ReuseTodo = strings.TrimSpace(t.TodoID)
+		t.PlanTask.Supervisor = lead
 		a.Tasks = append(a.Tasks, t.PlanTask)
 	}
 	if len(a.Tasks) == 0 {
@@ -43,6 +49,7 @@ func (s *Service) toolTaskPlanFrom(ctx context.Context, machine, sessionID strin
 		return "", fmt.Errorf("at most 8 tasks in one plan")
 	}
 	reused := map[string]bool{}
+	modes := map[string]string{} // each computer's Claude Code default mode, read once for this plan
 	for i := range a.Tasks {
 		t := &a.Tasks[i]
 		t.normalizeReadonlyPermission()
@@ -53,12 +60,6 @@ func (s *Service) toolTaskPlanFrom(ctx context.Context, machine, sessionID strin
 		t.Title, t.Prompt, t.Cwd = strings.TrimSpace(t.Title), strings.TrimSpace(t.Prompt), strings.TrimSpace(t.Cwd)
 		t.Model = strings.TrimSpace(t.Model)
 		t.Permission = strings.TrimSpace(t.Permission)
-		if t.Permission == "" {
-			t.Permission = s.settings(ctx).DefaultPermissionMode
-			if t.Permission == "" {
-				t.Permission = "default"
-			}
-		}
 		if err := t.normalizeMachinePolicy(); err != nil {
 			return "", fmt.Errorf("task %d: %w", i+1, err)
 		}
@@ -104,6 +105,10 @@ func (s *Service) toolTaskPlanFrom(ctx context.Context, machine, sessionID strin
 					return "", fmt.Errorf("task %d: %w", i+1, err)
 				}
 			}
+		}
+		// Unset: settled on the computer it lands on, so the card shows what will run (tasks_permission.go).
+		if t.Permission == "" {
+			t.Permission = s.taskPermission(ctx, t.Machine, modes)
 		}
 	}
 	if err := s.ensureTodosLoaded(ctx); err != nil {
@@ -157,6 +162,10 @@ func (s *Service) toolTaskPlanFrom(ctx context.Context, machine, sessionID strin
 			title, body = healthNotice(l)
 		}
 		s.push(ctx, Notification{Subtitle: machineName, DeviceID: here, SessionID: sessionID, Title: title, Body: body})
+		if lead != "" || s.isLeader(ctx, sessionID) {
+			s.lreports.plansDue.Store(true)
+			s.directionsSoon() // a leader's plan waiting for Start is a decision for the owner (leader_reports.go)
+		}
 		return fmt.Sprintf("Plan %s is on the user's screen as a card and pushed to their phone; nothing has started. "+
 			"Don't wait for it: carry on. When they start it, the tasks show up in the context snapshot.", p.ID) + dups, nil
 	}
@@ -174,11 +183,29 @@ func (s *Service) toolTaskPlanFrom(ctx context.Context, machine, sessionID strin
 		}
 	}
 	b.WriteString("This is not confirmation that any agent started. Startup can still fail; the task cards and context snapshot show the outcome.")
-	if s.isMain(ctx, sessionID) {
+	switch {
+	case lead != "":
+		fmt.Fprintf(&b, " Leader conversation %s supervises them: their supervision messages go there, and it reviews them with task_review.", lead)
+	case s.supervises(ctx, sessionID):
 		b.WriteString(" You supervise them: a supervision message comes when one needs you (review it with task_review).")
 	}
 	b.WriteString(dups)
 	return b.String(), nil
+}
+
+// planSupervisor is task_plan's supervisor from conversation self: "" (self supervises, as before) or a current leader,
+// which only the main conversation may hand work to.
+func (s *Service) planSupervisor(ctx context.Context, self, lead string) (string, error) {
+	lead = strings.TrimSpace(lead)
+	switch {
+	case lead == "" || lead == self:
+		return "", nil
+	case !s.isMain(ctx, self):
+		return "", errors.New("supervisor: only the main conversation hands work to a leader conversation; leave it out to supervise the tasks yourself")
+	case !s.isLeader(ctx, lead):
+		return "", fmt.Errorf("supervisor: %s is not a leader conversation (assistant.leaders lists them); leave it out to supervise the tasks yourself", lead)
+	}
+	return lead, nil
 }
 
 // applyPlanEdit takes what the user changed on the card; an empty field keeps the assistant's.

@@ -192,6 +192,9 @@ struct AttachSheet<More: View>: View {
     private var surface: Color { AppStyle.current.usesBeautifulUI ? theme.colors.surface : Theme.Shell.composer }
 
     var body: some View {
+        #if DEBUG || PERF_SIGNPOST
+        let _ = PerfTrace.body("AttachSheet")
+        #endif
         GeometryReader { outer in
             let safeTop = outer.safeAreaInsets.top
             let width = outer.size.width
@@ -534,6 +537,9 @@ private struct AttachGrid: View {
     var videoRoom: Int
 
     var body: some View {
+        #if DEBUG || PERF_SIGNPOST
+        let _ = PerfTrace.body("AttachGrid")
+        #endif
         let cell = AttachSheetPhysics.cell(width: width)
         let spacing = Theme.Attach.gridSpacing
         let assets = library.assets
@@ -593,6 +599,9 @@ private struct AttachPhotoCell: View {
     @State private var image: UIImage?
 
     var body: some View {
+        #if DEBUG || PERF_SIGNPOST
+        let _ = PerfTrace.body("AttachPhotoCell")
+        #endif
         Button(action: toggle) {
             ZStack(alignment: .topTrailing) {
                 Group {
@@ -611,6 +620,9 @@ private struct AttachPhotoCell: View {
                 AttachPickMark(number: number)
                     .padding(Theme.Attach.badgeInset)
             }
+            // Taps where it is drawn: the thumbnail filling the square is laid out past it (a landscape photo, wider than
+            // tall), and the cell to the right, drawn over it, took the taps on this one's ring (#3702).
+            .contentShape(.rect)
         }
         .buttonStyle(.plain)
         .frame(width: side, height: side)

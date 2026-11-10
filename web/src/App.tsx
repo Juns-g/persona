@@ -1,10 +1,12 @@
-import { Component, Suspense, type ErrorInfo, type ReactNode, useCallback, useEffect, useId, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useId, useRef, useState } from "react";
 import { api, ApiError, errorText, getToken, handleUnauthorized, setToken } from "./lib/api";
 import { pair, takeToken } from "./lib/auth";
 import { useCloseOnBack } from "./lib/back-close";
 import { SCRIM_FADE, useLingers } from "./lib/lingers";
-import { isChunkError, PageBoundary } from "./views/PageBoundary";
-import { navigationCrumb, reportBoundary } from "./lib/error-reports";
+import { PageBoundary } from "./views/PageBoundary";
+import { PerAssistant } from "./views/PerAssistant";
+import { OverlayBoundary, useOpened } from "./views/LazyOverlay";
+import { navigationCrumb } from "./lib/error-reports";
 import { lazyPage, preloadPages } from "./lib/lazy-page";
 import { drawerA11y, focusBack, useDrawerDrag } from "./lib/drawer";
 import { acceptHubs, here, rememberHub, takeHubs } from "./lib/hubs";
@@ -51,6 +53,7 @@ const AgentsView = lazyPage(() => import("./views/agents/AgentsView").then((m) =
 const WorkspaceBoard = lazyPage(() => import("./views/WorkspaceBoard").then((m) => m.WorkspaceBoard), { routes: ["workspace-board"] });
 const Machines = lazyPage(() => import("./views/Machines").then((m) => m.Machines), { routes: ["machines"] });
 const TerminalPage = lazyPage(() => import("./views/terminal/TerminalPage").then((m) => m.TerminalPage), { routes: ["terminal"] });
+const SubscriptionsPage = lazyPage(() => import("./views/subscriptions/SubscriptionsPage").then((m) => m.SubscriptionsPage), { routes: ["subscriptions"] });
 const MachineDetail = lazyPage(() => import("./views/machines/MachineDetail").then((m) => m.MachineDetail), { routes: ["machine"] });
 const SpacePage = lazyPage(() => import("./views/SpacePage").then((m) => m.SpacePage), { routes: ["space"] });
 const Settings = lazyPage(() => import("./views/Settings").then((m) => m.Settings), { routes: ["settings"] });
@@ -304,7 +307,7 @@ function Shell() {
   const title =
     pane ? "Agent" : route.name === "persona" ? "Persona" : route.name === "persona-new" ? t("app.title_new_chat") : route.name === "history" ? t("app.title_history") : route.name === "health" ? t("app.title_health") : route.name === "profile" ? t("app.title_profile") : route.name === "inbox" ? t("app.title_inbox") : route.name === "messages" ? t("app.title_messages")
       : route.name === "request" ? t("request-page.title") : route.name === "routines" ? t("app.title_routines") : route.name === "kb" ? t("app.title_kb") : route.name === "workspace-board" ? t("app.title_workspace_board") : route.name === "todos" ? t("app.title_todos") : route.name === "machines" || route.name === "machine" ? t("app.title_machines") : route.name === "space" ? route.space : route.name === "terminal" ? t("app.title_terminal") : route.name === "settings" ? t("app.title_settings")
-      : route.name === "agents" ? t("app.title_agents") : route.name === "agent-list" ? "Agents" : route.name === "agent-archives" ? t("app.title_agent_archives") : route.name === "extension" ? extensionTitle || t("app.title_extension") : t("app.title_home");
+      : route.name === "agents" ? t("app.title_agents") : route.name === "agent-list" ? "Agents" : route.name === "agent-archives" ? t("app.title_agent_archives") : route.name === "extension" ? extensionTitle || t("app.title_extension") : route.name === "subscriptions" ? t("app.title_subscriptions") : t("app.title_home");
 
   // never reached the hub: say so with a way to try again, instead of pages loading forever (kept through a retry)
   const [away, setAway] = useState(false);
@@ -380,6 +383,9 @@ function Shell() {
     case "settings":
       main = <Settings onToggleSidebar={toggle} />;
       break;
+    case "subscriptions":
+      main = <SubscriptionsPage onToggleSidebar={toggle} />;
+      break;
     case "extension":
       main = <ExtensionNavPage key={`${route.extension}/${route.ui}`} extension={route.extension} ui={route.ui} onToggleSidebar={toggle} />;
       break;
@@ -425,7 +431,7 @@ function Shell() {
             <ConnectionPill />
           </div>
         )}
-        <PageBoundary page={href(route)}><Suspense fallback={<PageLoading />}>{main}</Suspense></PageBoundary>
+        <PageBoundary page={href(route)}><Suspense fallback={<PageLoading />}><PerAssistant route={route}>{main}</PerAssistant></Suspense></PageBoundary>
       </main>
       <SidePanel />
       {paletteOpened && (
@@ -449,41 +455,6 @@ function Shell() {
       <AttentionSignals label={title} pane={pane} />
     </div>
   );
-}
-
-/** True from the first render where `open` is, and kept so afterwards: a closed overlay stays mounted for its exit. */
-function useOpened(open: boolean): boolean {
-  const [opened, setOpened] = useState(open);
-  if (open && !opened) setOpened(true);
-  return opened || open;
-}
-
-/**
- * Keeps a lazy overlay's failure (its chunk would not load: offline, or the hub was redeployed) from taking the shell
- * down, since it sits outside PageBoundary: the overlay shows nothing and is closed, so the next open from any entry
- * (shortcut, sidebar button) is a fresh open that tries again (lazyPage does not keep a failed load).
- */
-export class OverlayBoundary extends Component<{ open: boolean; onClose: () => void; children: ReactNode }, { failed: boolean }> {
-  state = { failed: false };
-
-  static getDerivedStateFromError() {
-    return { failed: true };
-  }
-
-  componentDidCatch(error: unknown, info: ErrorInfo) {
-    // a chunk that would not load is a warning (a redeploy), anything else a render crash (docs/web/web.md "Error reports")
-    reportBoundary(error, "overlay_boundary", isChunkError(error), info.componentStack);
-    // left open, an open request would not change the state, and the entry points would do nothing until a reload
-    this.props.onClose();
-  }
-
-  componentDidUpdate(prev: { open: boolean }) {
-    if (this.state.failed && this.props.open && !prev.open) this.setState({ failed: false });
-  }
-
-  render() {
-    return this.state.failed ? null : this.props.children;
-  }
 }
 
 // The hub was never reached (offline, or it is down): an empty state that says so and tries again on a tap, instead of

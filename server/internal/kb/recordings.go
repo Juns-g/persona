@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -20,8 +21,9 @@ import (
 // Recordings (docs/assistant/knowledge.md "Recordings", docs/protocol/protocol.md "Recording sync"): the phone uploads each recording's transcript,
 // keyed by its UUID, the whole state every time (revision orders them), so replays, reordering and a transcript
 // completed later all land on one entry. Only text: the audio stays on the phone. A directory per recording:
-// meta.json, segments.json, transcript.md (what the searches read), summary.md (the model's, once it is complete).
-// Uploads journal the accepted files until all replacements commit (recording_commit.go).
+// meta.json, segments.json, transcript.md (what the searches read), summary.md (the model's, once it is complete), and
+// for an attended meeting live.json (live.go). Uploads journal the accepted files until all replacements commit
+// (recording_commit.go).
 // recordings/.deleted.json is the tombstones: a late upload of a deleted one is refused. Kept recordingDays.
 
 // KindRecording is the recordings' kind and directory.
@@ -45,6 +47,27 @@ type RecordingBookmark struct {
 	Label string  `json:"label,omitempty"`
 }
 
+// RecordingCalendar is the event of the phone's own calendar a recording belongs to: a hint for its name and the
+// minutes' attendees and place (docs/assistant/meeting-minutes.md "Field contract").
+type RecordingCalendar struct {
+	Title     string   `json:"title"`
+	Attendees []string `json:"attendees,omitempty"`
+	Location  string   `json:"location,omitempty"`
+}
+
+// Recording kinds: a meeting gets minutes (minutes.go); a note (or none) only the summary.
+const (
+	RecordingNote    = "note"
+	RecordingMeeting = "meeting"
+)
+
+// Limits of an upload's calendar hint.
+const (
+	maxCalendarTitle     = 200
+	maxCalendarAttendees = 100
+	maxCalendarName      = 100
+)
+
 // RecordingUpload is PUT /api/v1/recordings/{id}'s body.
 type RecordingUpload struct {
 	Revision  int64               `json:"revision"`
@@ -57,7 +80,30 @@ type RecordingUpload struct {
 	Bookmarks []RecordingBookmark `json:"bookmarks"`
 	Segments  []RecordingSegment  `json:"segments"`
 	Complete  bool                `json:"complete"`
+	Kind      string              `json:"kind"`
+	Calendar  *RecordingCalendar  `json:"calendar,omitempty"`
+	// Attendance is the role Persona attends the meeting in ("" or AttendanceOff: none) and AttendingSession the
+	// session that attends (nil: the main chat); see normalizeAttendance and live.go.
+	Attendance       string      `json:"attendance,omitempty"`
+	AttendingSession *SessionRef `json:"attending_session,omitempty"`
+	// badRole, badSession: the JSON held a value of the wrong type for these two fields (UnmarshalJSON), which
+	// turns attending off rather than failing the upload.
+	badRole, badSession bool
 }
+
+// MeetingRef is the knowledge base's calendar item (meetings or events) a recording overlaps.
+type MeetingRef struct {
+	Kind string `json:"kind"`
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// Minutes states (meta.json's minutes_state; "" when the recording is not a meeting).
+const (
+	MinutesPending = "pending"
+	MinutesReady   = "ready"
+	MinutesFailed  = "failed"
+)
 
 // Recording is a recording's meta.json.
 type Recording struct {
@@ -80,15 +126,40 @@ type Recording struct {
 	// SummarizedRev is the revision summary.md was written from (0: none yet).
 	SummarizedRev int64     `json:"summarized_rev,omitempty"`
 	Updated       time.Time `json:"updated"`
+	// Meeting minutes (minutes.go). Kind and Calendar are the phone's, replaced by every upload; the rest is the hub's.
+	Kind     string             `json:"kind,omitempty"`
+	Calendar *RecordingCalendar `json:"calendar,omitempty"`
+	// Attending the meeting (live.go): the phone's too, replaced by every upload. Attendance is "" when off (never
+	// AttendanceOff on disk); AttendingSession is nil for the main chat, and always when attendance is off.
+	Attendance       string      `json:"attendance,omitempty"`
+	AttendingSession *SessionRef `json:"attending_session,omitempty"`
+	// Meeting is the overlapping calendar item, matched once per revision (MatchedRev); Items links it ("events/<id>").
+	Meeting      *MeetingRef `json:"meeting,omitempty"`
+	Items        []string    `json:"items,omitempty"`
+	MatchedRev   int64       `json:"matched_rev,omitempty"`
+	MinutesState string      `json:"minutes_state,omitempty"`
+	MinutesAsked bool        `json:"minutes_asked,omitempty"` // the user asked for minutes: a meeting whatever its kind
+	// MinutesRev is the revision minutes.json was made from (0: none, or asked to be made again); MinutesVersion counts
+	// the minutes written; MinutesFails the unusable answers for MinutesFailRev (failed after minutesTries), and
+	// MinutesTimeouts its tries that ran out of time, the next not before MinutesRetryAt (minutes_timeout.go).
+	MinutesRev      int64     `json:"minutes_rev,omitempty"`
+	MinutesVersion  int       `json:"minutes_version,omitempty"`
+	MinutesFails    int       `json:"minutes_fails,omitempty"`
+	MinutesFailRev  int64     `json:"minutes_fail_rev,omitempty"`
+	MinutesTimeouts int       `json:"minutes_timeouts,omitempty"`
+	MinutesRetryAt  time.Time `json:"minutes_retry_at,omitzero"`
+	// MinutesAsks counts the user's requests: minutes made from before the latest one don't settle it.
+	MinutesAsks int `json:"minutes_asks,omitempty"`
 	Tagging
 }
 
 // RecordingState is a recording as the phone reconciles against it (GET /api/v1/recordings).
 type RecordingState struct {
-	ID        string    `json:"id"`
-	Revision  int64     `json:"revision"`
-	Complete  bool      `json:"complete"`
-	StartedAt time.Time `json:"started_at"`
+	ID           string    `json:"id"`
+	Revision     int64     `json:"revision"`
+	Complete     bool      `json:"complete"`
+	StartedAt    time.Time `json:"started_at"`
+	MinutesState string    `json:"minutes_state,omitempty"`
 }
 
 // What PutRecording did.
@@ -97,6 +168,16 @@ const (
 	RecordingStale   = "stale"
 	RecordingExpired = "expired"
 )
+
+// RecordingPut is PutRecording's result: Status is RecordingStored, RecordingStale or RecordingExpired; Attendance the
+// role in effect after it (AttendanceOff, AttendanceListener or AttendanceParticipant: the stored recording's, so the
+// one already there for a stale upload and off for an expired one), and AttendanceProblem what was wrong with this
+// upload's attendance fields ("" or an Attendance* problem), whatever Status is.
+type RecordingPut struct {
+	Status            string
+	Attendance        string
+	AttendanceProblem string
+}
 
 var (
 	// ErrRecordingDeleted: the recording was deleted (a tombstone); the phone must not upload it again.
@@ -166,11 +247,16 @@ func (s *Store) tombstones() map[string]time.Time {
 	return m
 }
 
-// recordingName is what a recording is called in lists: the user's title, the model's, else when it started.
+// recordingName is what a recording is called in lists: the user's title, the phone calendar's, the matched calendar
+// item's, the model's, else when it started.
 func (s *Store) recordingName(r *Recording) string {
 	switch {
 	case r.Title != "":
 		return r.Title
+	case r.Calendar != nil && r.Calendar.Title != "":
+		return r.Calendar.Title
+	case r.Meeting != nil && r.Meeting.Name != "":
+		return r.Meeting.Name
 	case r.AITitle != "":
 		return r.AITitle
 	}
@@ -209,57 +295,127 @@ func (u *RecordingUpload) clean() error {
 	sort.SliceStable(u.Bookmarks, func(i, j int) bool { return u.Bookmarks[i].At < u.Bookmarks[j].At })
 	u.Title = oneLine(u.Title)
 	u.Language = strings.TrimSpace(u.Language)
+	switch u.Kind = strings.ToLower(strings.TrimSpace(u.Kind)); u.Kind {
+	case "", RecordingNote:
+		u.Kind = RecordingNote
+	case RecordingMeeting:
+	default:
+		return badRecording("kind must be meeting or note")
+	}
+	return u.cleanCalendar()
+}
+
+// cleanCalendar trims the calendar hint, dropping it when it says nothing.
+func (u *RecordingUpload) cleanCalendar() error {
+	c := u.Calendar
+	if c == nil {
+		return nil
+	}
+	c.Title, c.Location = strings.Join(strings.Fields(c.Title), " "), strings.Join(strings.Fields(c.Location), " ")
+	if len([]rune(c.Title)) > maxCalendarTitle || len([]rune(c.Location)) > maxCalendarTitle {
+		return badRecording("calendar title and location are at most %d characters", maxCalendarTitle)
+	}
+	if len(c.Attendees) > maxCalendarAttendees {
+		return badRecording("at most %d calendar attendees", maxCalendarAttendees)
+	}
+	names := c.Attendees[:0]
+	for _, n := range c.Attendees {
+		n = strings.Join(strings.Fields(n), " ")
+		if len([]rune(n)) > maxCalendarName {
+			return badRecording("a calendar attendee is at most %d characters", maxCalendarName)
+		}
+		if n != "" && !slices.Contains(names, n) {
+			names = append(names, n)
+		}
+	}
+	c.Attendees = names
+	if c.Title == "" && c.Location == "" && len(c.Attendees) == 0 {
+		u.Calendar = nil
+	}
 	return nil
 }
 
 // PutRecording stores an upload (the whole state of recording id): RecordingStale when a newer revision is there,
-// RecordingExpired when it started before the retention, ErrRecordingDeleted after a delete.
-func (e *Engine) PutRecording(rawID string, u RecordingUpload, now time.Time) (string, error) {
+// RecordingExpired when it started before the retention, ErrRecordingDeleted after a delete. Attendance fields that
+// are wrong never fail it: attending is then off, and the result says why (normalizeAttendance). Engine.LiveChanged
+// hears of a stored upload of a recording that attends or attended until now.
+func (e *Engine) PutRecording(rawID string, u RecordingUpload, now time.Time) (RecordingPut, error) {
+	put, live, err := e.putRecording(rawID, u, now)
+	if err == nil && live && e.LiveChanged != nil {
+		e.LiveChanged(put.id)
+	}
+	return put.RecordingPut, err
+}
+
+type recordingPut struct {
+	RecordingPut
+	id string
+}
+
+// putRecording is PutRecording; live reports a stored upload the attending feeder should look at.
+func (e *Engine) putRecording(rawID string, u RecordingUpload, now time.Time) (put recordingPut, live bool, err error) {
+	put.Attendance = AttendanceOff
 	if e.Store.ReadOnly() {
-		return "", ErrReadOnly
+		return put, false, ErrReadOnly
 	}
 	id, ok := RecordingID(rawID)
 	if !ok {
-		return "", badRecording("id must be a UUID")
+		return put, false, badRecording("id must be a UUID")
 	}
+	put.id = id
 	if err := u.clean(); err != nil {
-		return "", err
+		return put, false, err
 	}
+	put.AttendanceProblem = u.normalizeAttendance()
 	st := e.Store
 	st.recMu.Lock()
 	defer st.recMu.Unlock()
 	if _, gone := st.tombstones()[id]; gone {
-		return "", ErrRecordingDeleted
+		return put, false, ErrRecordingDeleted
 	}
 	if u.StartedAt.Before(now.UTC().AddDate(0, 0, -recordingDays(e.RecordingDays()))) {
-		return RecordingExpired, nil
+		put.Status = RecordingExpired
+		return put, false, nil
 	}
 	r, exists := st.Recording(id)
 	if exists && r.Revision > u.Revision {
-		return RecordingStale, nil
+		put.Status, put.Attendance = RecordingStale, r.AttendanceRole()
+		return put, false, nil
 	}
 	if !exists {
 		r = &Recording{ID: id}
 	}
+	wasAttending := r.Attendance != ""
 	r.Revision, r.StartedAt, r.EndedAt, r.Duration = u.Revision, u.StartedAt.UTC(), u.EndedAt, u.Duration
 	if r.EndedAt != nil {
 		t := r.EndedAt.UTC()
 		r.EndedAt = &t
 	}
 	r.Language, r.Device, r.Title, r.Bookmarks, r.Complete = u.Language, u.Device, u.Title, u.Bookmarks, u.Complete
+	r.Kind, r.Calendar = u.Kind, u.Calendar
+	r.Attendance, r.AttendingSession = u.Attendance, u.AttendingSession
 	r.Segments, r.Chars = len(u.Segments), 0
 	for _, sg := range u.Segments {
 		r.Chars += len([]rune(sg.Text))
 	}
+	r.planMinutes() // after Chars: a meeting that completed with no text gets none
 	r.Name = st.recordingName(r)
 	r.Updated = now.UTC()
 	if err := st.commitRecording(r, u.Segments); err != nil {
-		return "", err
+		return put, false, err
 	}
+	put.Status, put.Attendance = RecordingStored, r.AttendanceRole()
 	st.notify(KindRecording, id, "metadata")
 	st.notify(KindRecording, id, "messages")
 	e.index(KindRecording, id, r.Name, r.Tagging, r.OneLine, r.StartedAt)
-	return RecordingStored, nil
+	if r.EndedAt != nil {
+		// The end batch is timed from when the hub first saw the end (live.go); the upload stands either way, and the
+		// next one carrying ended_at tries again.
+		if err := st.liveEnded(id, r.Attendance != "", now); err != nil {
+			e.logf("recording %s: live end: %v", id, err)
+		}
+	}
+	return put, wasAttending || r.Attendance != "", nil
 }
 
 func nonNilSegments(s []RecordingSegment) []RecordingSegment {
@@ -349,7 +505,7 @@ func (e *Engine) unlinkRecording(id string, projects []string) {
 func (e *Engine) RecordingStates() (kept []RecordingState, deleted []string) {
 	kept, deleted = []RecordingState{}, []string{}
 	for _, r := range e.Store.Recordings() {
-		kept = append(kept, RecordingState{ID: r.ID, Revision: r.Revision, Complete: r.Complete, StartedAt: r.StartedAt})
+		kept = append(kept, RecordingState{ID: r.ID, Revision: r.Revision, Complete: r.Complete, StartedAt: r.StartedAt, MinutesState: r.MinutesState})
 	}
 	sort.Slice(kept, func(i, j int) bool { return kept[i].StartedAt.After(kept[j].StartedAt) })
 	for id := range e.Store.tombstones() {

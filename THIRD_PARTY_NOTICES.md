@@ -182,7 +182,7 @@ DAMAGES, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
 FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM
 OTHER DEALINGS IN THE FONT SOFTWARE.
 
-## Barlow, Manrope, Sora and Unbounded
+## Barlow, Manrope, Sora, Unbounded and Noto Serif CJK
 
 Fonts under the same SIL Open Font License 1.1 as JetBrains Mono (its full text is above). Each keeps its license file
 beside it.
@@ -192,7 +192,8 @@ beside it.
 | Barlow Semi Condensed | `android/core/designsystem/src/main/res/font/barlow_sc_regular.ttf`, `barlow_sc_medium.ttf`, `barlow_sc_semibold.ttf` | Copyright 2017 The Barlow Project Authors (https://github.com/jpt/barlow) | `android/core/designsystem/src/main/assets/licenses/OFL-barlow.txt` |
 | Manrope | `android/core/designsystem/src/main/res/font/manrope.ttf` | Copyright 2018 The Manrope Project Authors (https://github.com/googlefonts/manrope) | `android/core/designsystem/src/main/assets/licenses/OFL-manrope.txt` |
 | Sora | `android/core/designsystem/src/main/res/font/sora.ttf` | Copyright 2019 The Sora Project Authors (https://github.com/sora-xor/sora-font) | `android/core/designsystem/src/main/assets/licenses/OFL-sora.txt` |
-| Unbounded (the website) | `site/public/fonts/unbounded-latin-500-normal.woff2`, `site/public/fonts/unbounded-latin-800-normal.woff2` | Copyright 2022 The Unbounded Project Authors (https://github.com/googlefonts/unbounded) | `site/public/fonts/OFL-Unbounded.txt` |
+| Unbounded (the website) | `site/public/fonts/unbounded-latin-800-normal.woff2` | Copyright 2022 The Unbounded Project Authors (https://github.com/googlefonts/unbounded) | `site/public/fonts/OFL-Unbounded.txt` |
+| Noto Serif CJK SC Bold (the website's headlines, a subset made by `scripts/assets/make_site_assets.py`) | `site/public/fonts/persona-serif.woff` | Copyright 2017-2022 Adobe (http://www.adobe.com/), with Reserved Font Name 'Source' (https://github.com/notofonts/noto-cjk) | `site/public/fonts/OFL-NotoSerifCJK.txt` |
 
 ## KaTeX, Mermaid and Phosphor Icons
 
@@ -388,6 +389,17 @@ packages below; its swift-snapshot-testing dependency is only for its own tests 
 | swift-cmark (cmark-gfm) | https://github.com/swiftlang/swift-cmark | BSD-2-Clause, Copyright (c) 2014, John MacFarlane; parts under MIT: houdini (Copyright (C) 2012 Vicent Martí), buffer and chunk ((C) 2012 Github, Inc.), utf8 ((C) 2009 Public Software Group e. V., Berlin, Germany) |
 
 Each package's LICENSE (swift-cmark's COPYING) applies.
+
+## MarqueeGlow
+
+The iOS app links MarqueeGlow (`apple/project.yml`) to draw the composer's glow while a reply is generating
+(`apple/Persona/DesignSystem/ComposerGlow.swift`). It has no dependencies.
+
+| Package | Source | License |
+| --- | --- | --- |
+| MarqueeGlow | https://github.com/szupzj18/MarqueeGlow | MIT, Copyright (c) 2026 ChrisPan |
+
+The package's LICENSE applies.
 
 ## SheetJS
 
