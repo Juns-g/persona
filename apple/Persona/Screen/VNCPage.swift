@@ -573,15 +573,14 @@ struct VNCHelp: View {
 
 extension RFBSession {
     /// One-Tap Unlock (#1507 a-2): a Shift wakes the lock screen and puts the cursor in its password field, then the kept
-    /// password and Return; the hub only notes that it was unlocked.
+    /// password and Return; the hub only notes that it was unlocked. The pause counts from when the Shift goes out: just
+    /// signed in, the keys wait out the session's first seconds (RFBInputQueue, #3075).
     func unlockWithKeptPassword() {
         guard let kept = ScreenCredentials.load(ref) else { return }
         press(Self.shift)
-        Task {
-            try? await Task.sleep(for: .milliseconds(800))
-            for ch in kept.password.unicodeScalars { press(Self.keysym(ch)) }
-            press(VNCKeys.enter)
-            _ = try? await AppModel.shared.api(ref.group)?.computerJob(machine: ref.id, "unlocking")
-        }
+        pause(.milliseconds(800))
+        for ch in kept.password.unicodeScalars { press(Self.keysym(ch)) }
+        press(VNCKeys.enter)
+        Task { _ = try? await AppModel.shared.api(ref.group)?.computerJob(machine: ref.id, "unlocking") }
     }
 }

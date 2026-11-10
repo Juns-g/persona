@@ -152,6 +152,7 @@ import SwiftUI
             size = CGSize(width: width, height: height)
             if pointer == .zero { pointer = CGPoint(x: width / 2, y: height / 2) }
             phase = .live
+            input.signedIn() // once a connection: the Mac drops keys for a moment after it (#3075)
             if let t = typed {
                 if t.remember { ScreenCredentials.save(.init(account: t.0.account, password: t.0.password), for: ref) } else { ScreenCredentials.forget(ref) }
                 typed = nil
@@ -216,6 +217,9 @@ import SwiftUI
 
     /// A key pressed and let go, with these modifiers held around it.
     func press(_ keysym: UInt32, with modifiers: [UInt32] = []) { input.press(keysym, with: modifiers) }
+
+    /// A pause between the keys before it and after it, measured from when those before it went out.
+    func pause(_ duration: Duration) { input.pause(duration) }
 
     /// Text typed: Latin-1 a key at a time; anything else (Chinese from the input method) by the Mac's clipboard and
     /// ⌘V, through its node (`computer/clipboard`); in the order typed (#2374). A paste whose clipboard write fails
