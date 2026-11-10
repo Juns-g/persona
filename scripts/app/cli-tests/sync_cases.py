@@ -14,7 +14,7 @@ step's `wait` in real time (SYNC_CASE_WAIT_CAP=<seconds> shortens longer ones), 
 back as the case's view through the chat's marks (`chatMark`: `chat.user.*`, `chat.answer.*`, `chat.outbox.*`,
 `chat.card.*`, `chat.live`). After every step the three rules hold, the step's `expect` matches, and once everything
 settled the screen shows `end`. One PASS / FAIL / KNOWN line per run; a failed run leaves the screen in CLITEST_OUT
-(clitest's `dump`). Exits non-zero when a run failed or a known one passed.
+(clitest's `dump`); SYNC_CASE_TRACE=1 prints every step's view. Exits non-zero when a run failed or a known one passed.
 """
 import json
 import os
@@ -24,6 +24,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import traceback
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -37,12 +38,15 @@ from personactl import Ctl, CtlError  # noqa: E402
 from test_sync_case_mock import Device  # noqa: E402
 
 SPEC = os.path.join(ROOT, "spec", "fixtures", "sync")
+TRACE = os.environ.get("SYNC_CASE_TRACE") == "1"  # every step's view, as read from the screen
 
 # Cases that fail for a bug of their own, until it is fixed: "<case>" or "<case>@<device>" -> the issue, and what the
 # failure must say (another failure is still a failure).
 KNOWN = {}
 
 ALLOW, DENY = ("Allow", "允许"), ("Deny", "拒绝")
+# A failed bubble's menu items (its accessibility actions), and the alert a refusal for a draft on the computer raises.
+RESEND, DELETE, NOT_NOW = ("Resend", "重发"), ("Delete", "删除"), ("Not Now", "先不发")
 
 
 def mock(hub, path, body=None, timeout=90):
@@ -86,8 +90,12 @@ class App:
         self.ended, self.answering = set(), set()
 
     def args(self, fresh):
-        a = PINNED + ["-app.tab", "assistant", "-tab", "assistant",
-                      "-openAssistant", "%s/%s" % (self.chat["machine_id"], self.chat["session_id"])]
+        a = PINNED + ["-app.tab", "assistant", "-tab", "assistant"]
+        # a `new` chat starts on the new-conversation page; the session it starts opens there by itself
+        if self.chat.get("new"):
+            a += ["-newAssistant", "YES"]
+        else:
+            a += ["-openAssistant", "%s/%s" % (self.chat["machine_id"], self.chat["session_id"])]
         return a + (["-openChatsFresh", "YES"] if fresh else [])
 
     def forget(self):
@@ -105,10 +113,22 @@ class App:
     def launch(self):
         self.forget()
         self.c.launch(self.hub, extra=self.args(fresh=True), pair="mock-" + self.device)
+        self.in_front()
 
     def relaunch(self):
         """Killed and started again from what it stored, paired as it was."""
         self.c.launch(self.hub, extra=self.args(fresh=False), pair="")
+        self.in_front()
+
+    def in_front(self):
+        """Active: a system alert over it (a permission the app asked for) leaves it inactive, with no socket, in every
+        run after, and nothing here can answer it."""
+        for _ in range(20):
+            if self.c.call("state").get("appState") == "active":
+                return
+            time.sleep(0.25)
+        raise CtlError("start: the app is not active: a system alert covers it? (look with `xcrun simctl io <udid> "
+                       "screenshot`; reboot the simulator to clear it)")
 
     def settle(self):
         try:
@@ -143,9 +163,45 @@ class App:
 
     def send(self, text):
         self.c.call("type", text=text, id="shell-composer-field")
-        self.c.call("wait", id="shell-composer-send", timeout=5)
+        # the button comes in once there is text: wait until a touch reaches it and it stopped moving
+        self.c.call("wait", id="shell-composer-send", visibleOnly=True, stable=True, timeout=5)
         self.c.call("activate", id="shell-composer-send")
         self.c.call("dismiss-keyboard")
+
+    def nth(self, e, **filters):
+        """`e`'s index among the elements `filters` match (what `activate` takes as `index`)."""
+        for i, x in enumerate(self.c.call("tree", **filters)["elements"]):
+            if x["frame"] == e["frame"]:
+                return i
+        raise CtlError("%s is gone" % json.dumps(filters, ensure_ascii=False))
+
+    def close_alert(self):
+        """A refusal for a draft on the computer asks first (Clear and Send / Not Now): the user closes it to use the
+        bubble's own Resend."""
+        for label in NOT_NOW:
+            if self.c.call("tree", label=label, trait="button", onScreenOnly=True)["elements"]:
+                self.c.call("activate", label=label, trait="button")
+                self.c.call("wait", label=label, trait="button", gone=True, timeout=5)
+                return
+
+    def on_failed(self, text, names):
+        """Resend or Delete (`names`: the item's label in each language) on the failed bubble with these words: the
+        items of its menu, done as its accessibility actions (no touch reaches a menu's items without idb)."""
+        self.close_alert()
+        els = [e for e in self.c.call("tree", containers=True)["elements"] if e.get("onScreen")]
+        leaves = [e for e in els if not e.get("container")]
+        for m in (e for e in els if e.get("container") and e["id"].startswith("chat.outbox.failed.")):
+            inner = [e for e in leaves if inside(e, m)]
+            if words(text) not in words(" ".join(e["label"] for e in inner)):
+                continue
+            menu = next((e for e in inner if e.get("actions")), None)
+            name = menu and next((n for n in names if n in menu["actions"]), None)
+            if not name:
+                raise CtlError("the failed bubble %r has no %s: %s" % (text, names[0], menu and menu["actions"]))
+            i = self.nth(menu, label=menu["label"])
+            self.c.call("activate", label=menu["label"], index=i, action=name)
+            return
+        raise CtlError("no failed bubble %r on screen" % text)
 
     def answer(self, ix, allow):
         cards = [e for e in self.c.call("tree", containers=True, id="chat.card." + ix)["elements"] if e.get("container")]
@@ -218,12 +274,13 @@ def req_is(w, s, before):
     return s.get("key") == w.get("id")
 
 
-def play(c, hub, file, case, me):
-    """One run of `case` with the app as device `me`: the failures, in order."""
-    failures = []
-    status, out = mock(hub, "/mock/case/load", {"case": "%s#%s" % (file, case["name"])})
+def play(c, hub, file, case, me, out):
+    """One run of `case` with the app as device `me`: the failures, in order, and where the screen was saved when
+    there were some (`out`, before the app goes)."""
+    failures, trace, saved = [], "", None
+    status, loaded = mock(hub, "/mock/case/load", {"case": "%s#%s" % (file, case["name"])})
     if status != 200:
-        return ["load: %s" % out]
+        return ["load: %s" % loaded], None
     chat = case["chat"]
     base = "/api/v1/sessions/%s/%s" % (chat["machine_id"], chat["session_id"])
     port = urllib.parse.urlparse(hub).port
@@ -243,10 +300,13 @@ def play(c, hub, file, case, me):
                 checked = len(seen["seen"])
                 break
             if i == 59:
-                return ["start: the app did not subscribe to the chat: %s" % json.dumps(seen)]
+                raise CtlError("start: the app did not subscribe to the chat: %s" % json.dumps(seen))
             time.sleep(0.5)
         try:
-            c.call("wait-loaded", _timeout=20, session="%s/%s" % (chat["machine_id"], chat["session_id"]))
+            if chat.get("new"):
+                c.call("wait", id="shell-composer-field", timeout=20)
+            else:
+                c.call("wait-loaded", _timeout=20, session="%s/%s" % (chat["machine_id"], chat["session_id"]))
         except CtlError as e:
             failures.append("start: %s" % e)
         app.settle()
@@ -286,9 +346,16 @@ def play(c, hub, file, case, me):
                     failures.append("%s: %s" % (where, e))
             elif u:
                 try:
-                    if u.get("send"):
-                        app.sent.append({"id": u["send"]["id"], "text": u["send"]["text"]})
-                        app.send(u["send"]["text"])
+                    if u.get("send") or u.get("start"):
+                        m = u.get("send") or u["start"]
+                        app.sent.append({"id": m["id"], "text": m["text"]})
+                        app.send(m["text"])
+                    elif u.get("retry"):
+                        app.on_failed(next(s["text"] for s in app.sent if s["id"] == u["retry"]), RESEND)
+                    elif u.get("discard"):
+                        s = next(s for s in app.sent if s["id"] == u["discard"])
+                        s["discarded"] = True
+                        app.on_failed(s["text"], DELETE)
                     elif u.get("answer"):
                         app.answering.add(u["answer"]["id"])
                         app.answer(u["answer"]["id"], u["answer"]["resolution"].get("allow", True) is not False)
@@ -307,6 +374,8 @@ def play(c, hub, file, case, me):
             time.sleep(min(wait, cap) if cap else wait)
             app.settle()
             v = rules(where)
+            if TRACE:
+                print("  %s: %s" % (where, json.dumps(v, ensure_ascii=False)), flush=True)
             want = (st.get("expect") or {}).get(me)
             if want:
                 failures += ["%s: %s" % (where, d) for d in differences(v, want)]
@@ -330,13 +399,20 @@ def play(c, hub, file, case, me):
             time.sleep(1)
         rules("end")
         failures += ["end: %s" % d for d in diffs]
+    except CtlError as e:  # the app could not go on
+        failures.append(str(e))
+    except Exception as e:  # a bug here, or the app gone: the next run goes on
+        failures.append("the runner: %s" % (str(e) or repr(e)))
+        trace = traceback.format_exc()
     finally:
+        if failures:
+            saved = dump(c, out, "\n".join(failures), trace)
         for d in others.values():
             d.stopped = True
             d.close()
         # an app left running would connect to the next case as its device and take that device's socket
         subprocess.run(["xcrun", "simctl", "terminate", c.udid, c.bundle], capture_output=True)
-    return failures
+    return failures, saved
 
 
 def main(argv):
@@ -357,10 +433,7 @@ def main(argv):
             if only and run not in only and case["name"] not in only:
                 continue
             s = time.time()
-            try:
-                failures = play(c, hub, file, case, me)
-            except Exception as e:  # a bug here, or the app gone: the next run goes on
-                failures = ["the runner: %s" % "".join(e.args and str(e.args[0]) or repr(e))]
+            failures, saved = play(c, hub, file, case, me, os.path.join(dumps, run))
             known = KNOWN.get(run) or KNOWN.get(case["name"])
             if known and failures and all(re.search(known["because"], f) for f in failures):
                 verdict, why = "KNOWN", "%s: %s" % (known["issue"], failures[0])
@@ -368,7 +441,6 @@ def main(argv):
                 verdict, why, bad = "FAIL", "known under %s, and it passed: take it off KNOWN" % known["issue"], bad + 1
             elif failures:
                 verdict, why, bad = "FAIL", failures[0], bad + 1
-                saved = dump(c, os.path.join(dumps, run), "\n".join(failures), "")
                 why += "  (%d failures; %s)" % (len(failures), saved)
             else:
                 verdict, why = "PASS", ""

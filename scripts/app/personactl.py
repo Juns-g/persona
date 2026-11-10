@@ -20,6 +20,7 @@
   personactl.py wait [filters] [--gone] [--timeout s]                          until an element is there (or gone)
   personactl.py wait-loaded [--session m/s] [--timeout s]                      the chat on screen has its history from the hub
   personactl.py tap [filters] [--hid] [--allow-hidden]                         activate it; a real touch (idb) if it does not take that
+  personactl.py tap [filters] --action NAME                                    its custom accessibility action (a menu's item it offers)
   personactl.py longpress [filters] [--duration s]                             a real touch held on it (idb)
   personactl.py swipe [filters] --dir left|right|up|down [--distance pt] [--duration s]   a real swipe across it
   personactl.py drag --from x,y --to x,y [--duration s]                        a real finger between two points (pt)
@@ -38,8 +39,8 @@ find, wait, tap (accessibility activation only), scroll, type, snapshot and scre
 the idb gestures do not (install the DEBUG build with Xcode or devicectl and open it yourself, with -runtimeCLIHub YES).
 
 Element filters: --id, --id-prefix, --label, --label-contains, --label-prefix, --trait button|text|header|selected…,
---visible (a touch at its middle reaches it), --on-screen (its frame is on screen, covered or not), --index n (else the
-first match a touch reaches). The simulator is $PERSONACTL_UDID (or --udid, default "booted"); the app is $PERSONACTL_BUNDLE / $PERSONA_BUNDLE_ID.
+--visible (a touch at its middle reaches it), --on-screen (its frame is on screen, covered or not), --containers (also the
+containers that have an id, such as the chat's `chat.*` marks), --index n (else the first match a touch reaches). The simulator is $PERSONACTL_UDID (or --udid, default "booted"); the app is $PERSONACTL_BUNDLE / $PERSONA_BUNDLE_ID.
 `launch` picks a one-time token and keeps it, with the port, in ~/.cache/personactl/<udid>.json for the later
 commands. Standard library only; scripts can `from personactl import Ctl`.
 """
@@ -92,7 +93,8 @@ class Ctl:
         self.udid = udid or os.environ.get("PERSONACTL_UDID") or "booted"
         self.bundle = bundle or os.environ.get("PERSONACTL_BUNDLE") or env_value("PERSONA_BUNDLE_ID") or "com.example.persona"
         saved = self._load()
-        self.port = port or saved.get("port") or DEFAULT_PORT
+        # PERSONACTL_PORT: a port of this simulator's own, when another one's app may listen on the default
+        self.port = port or int(os.environ.get("PERSONACTL_PORT") or 0) or saved.get("port") or DEFAULT_PORT
         self.token = saved.get("token", "")
         self.hub = saved.get("hub")
 
@@ -162,7 +164,8 @@ class Ctl:
     def launch(self, hub=None, extra=(), wait=20, pair="mock"):
         """Terminates the app and launches it with a fresh token (paired with `hub` when given, with the hub token `pair`:
         scripts/mock/mock_hub.py playing a sync case takes `mock-<device>` as that device; "" keeps the pairing the app
-        has, as a relaunch does); waits for `ping`."""
+        has, as a relaunch does, still as an automated run: `-pairURL keep` pairs with nothing, and a `pairURL` at all
+        keeps the app from asking for notifications, a system alert only a touch answers); waits for `ping`."""
         if self.via_hub:
             raise CtlError("launch drives the simulator only: on a real phone install the DEBUG build with Xcode or "
                            "devicectl and open it yourself (launch arguments: -runtimeCLIHub YES)")
@@ -172,6 +175,8 @@ class Ctl:
         args = ["-runtimeCLI", str(self.port), "-runtimeCLIToken", self.token]
         if self.hub and pair:
             args += ["-pairURL", "persona://pair?url=" + urllib.parse.quote(self.hub, safe="") + "&token=" + urllib.parse.quote(pair, safe="")]
+        elif self.hub:
+            args += ["-pairURL", "keep"]
         sh("xcrun", "simctl", "launch", self.udid, self.bundle, *args, *extra)
         self._save()
         deadline = time.time() + wait
@@ -209,7 +214,10 @@ class Ctl:
     def tap(self, hid=False, **f):
         """Accessibility activation (a button's action, a menu opening), or with `hid` / when the element does not take
         it (a menu's items) a real touch at the middle of its frame through `idb ui tap`, once the screen settles (an
-        opening menu moves its items under the touch). Only on a match a touch reaches (`allowHidden=True`: any)."""
+        opening menu moves its items under the touch). Only on a match a touch reaches (`allowHidden=True`: any).
+        `action`: the element's custom accessibility action of that name instead (no touch does that)."""
+        if f.get("action"):
+            return self.call("activate", **f)
         if not hid:
             try:
                 r = self.call("activate", **f)
@@ -383,7 +391,7 @@ def filters(a):
     """The element filters of the command line, as the app's commands take them."""
     f = {"id": a.id, "idPrefix": a.id_prefix, "label": a.label, "labelContains": a.label_contains,
          "labelPrefix": a.label_prefix, "trait": a.trait, "index": a.index, "visibleOnly": a.visible or None,
-         "onScreenOnly": a.on_screen or None, "allowHidden": a.allow_hidden or None}
+         "onScreenOnly": a.on_screen or None, "allowHidden": a.allow_hidden or None, "containers": a.containers or None}
     return {k: v for k, v in f.items() if v is not None}
 
 
@@ -441,6 +449,8 @@ def main(argv):
     p.add_argument("--visible", action="store_true")
     p.add_argument("--on-screen", action="store_true")
     p.add_argument("--allow-hidden", action="store_true")
+    p.add_argument("--containers", action="store_true")
+    p.add_argument("--action")
     p.add_argument("--ignore-id", action="append", default=[])
     p.add_argument("--ignore-label-contains", action="append", default=[])
     p.add_argument("--ignore-rect", action="append", default=[])
@@ -508,7 +518,7 @@ def main(argv):
     elif a.cmd == "scenario":
         r = c.scenario(a.rest[0] if a.rest else None, a.env, a.control)
     elif a.cmd == "tap":
-        r = c.tap(a.hid, **filters(a))
+        r = c.tap(a.hid, **filters(a), action=a.action)
     elif a.cmd == "longpress":
         r = c.longpress(a.duration or 1.2, **filters(a))
     elif a.cmd == "swipe":

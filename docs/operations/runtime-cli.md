@@ -12,6 +12,7 @@ Why it exists, the trade-offs against other approaches (URL scheme, re-reading l
 
 ```sh
 export PERSONACTL_UDID=<simulator udid>            # unset means booted
+export PERSONACTL_PORT=<port>                      # optional: the App's port (default 18950), when another simulator's App may use it
 scripts/app/personactl.py launch --hub http://127.0.0.1:18760   # kill and relaunch the App (with a one-time token), wait for it to answer
 scripts/app/personactl.py state                      # current tab, open session, style, theme color, light/dark, connection state
 scripts/app/personactl.py online                     # wait for the hub's live connection (reconnects once if not connected within 2 s)
@@ -36,13 +37,13 @@ at 7 s. With `personactl.py settle` after launch, each shot measured 4.3–5.3 s
 | `freeze` | `on` (default true; false restores), `reduceMotion` (default true), `layers` (strip / pause / none, default strip) | `frozen`, `reduceMotion`, `paused`; see "Screens that never stop moving" |
 | `online` | `timeout` (15 s) | `nudged` (whether it reconnected); on timeout it errors with the current state. When `personactl.py online` is connected to `mock_scenarios.py` it also returns `mockRestarts` (see "Injecting state") |
 | `reset` | `coldChats` (keep no chats in memory; reload from disk cache then the hub, as after launch), `dropChatCache` (also clear the disk cache, = `-openChatsFresh YES`) | A new view tree, route unchanged, as if just launched. Answers like `state` |
-| `tree` | Element filters (below) | `elements`: each accessibility element's `id` (accessibilityIdentifier), `label`, `value`, `traits`, `frame` (screen coordinates, pt), `visible` (tappable), `onScreen` (frame is on screen) |
+| `tree` | Element filters (below) | `elements`: each accessibility element's `id` (accessibilityIdentifier), `label`, `value`, `traits`, `frame` (screen coordinates, pt), `visible` (tappable), `onScreen` (frame is on screen), `actions` (the names of its custom accessibility actions, when it has any); with `containers`, also each container that has an id, marked `container: true` |
 | `find` | Element filters, `index` | `count`, `element` (without `index`, the first one on screen) |
 | `wait` | Element filters, `gone`, `timeout` (10 s), `stable` | Checks every 100 ms until it exists (or is gone); errors on timeout. `stable: true`: once present, also wait for its frame to stay unchanged for 300 ms (after launch the top of a list takes a moment to settle, so measuring as soon as it appears gets it wrong); on timeout reports `not stable` and the last frame |
 | `perf` | | `counts`: body count per view, event count, main-thread time (requires launching with `-perfCounts YES`; the same data `LiveUpdateTests` reads) |
 | `refresh` | | Pull once from the hub (what pull-to-refresh does) |
 | `wait-loaded` | `session` (`<machine>/<session>`; if omitted, the one on screen: the chat open on the Agents page or the assistant's; it only waits, it won't open it), `timeout` (15 s) | Waits until this chat first gets its history from the hub (or an error) and the rows are rebuilt (unchanged for 300 ms); `items`, `rows`, `error`, `waited` (ms). Errors on timeout |
-| `activate` | Element filters, `allowHidden` | Does what a VoiceOver double-tap does on the first tappable match (the button's action, opening a menu); `activated` false means it doesn't respond (menu items). If there are matches but none tappable it reports `not visible`, and doesn't activate elements on the page the shell has hidden; with `allowHidden: true` or an `index` it picks the way `find` does |
+| `activate` | Element filters, `allowHidden`, `action` | Does what a VoiceOver double-tap does on the first tappable match (the button's action, opening a menu); `activated` false means it doesn't respond (menu items). `action`: performs the element's custom accessibility action of that name instead (VoiceOver's Actions rotor), and errors with the names it has when there is none; a failed bubble's Resend / Delete are its menu's items and its actions too. If there are matches but none tappable it reports `not visible`, and doesn't activate elements on the page the shell has hidden; with `allowHidden: true` or an `index` it picks the way `find` does |
 | `scroll` | `pages` (screens; negative goes up, each screen is 0.8 of the height) or `to` (top / bottom) | Sets the offset of the largest scroll view on screen directly, no momentum; only picks ones that are drawn (the page the shell hides is the same size but transparent); `offset`, `contentHeight`, `frame` (which one moved) |
 | `type` | `text`, optionally element filters (activates it first to take focus, picked as in `activate`) | Types into the focused text field |
 | `dismiss-keyboard` | | Dismisses the keyboard |
@@ -129,8 +130,9 @@ scripts/app/personactl.py tree --id-prefix agents. --visible
 ```
 
 Element filters: `--id` (exact), `--id-prefix`, `--label` (exact), `--label-contains`, `--label-prefix`, `--trait` (button / text /
-header / selected / search / image / disabled), `--visible` (tappable), `--on-screen` (frame on screen, even if covered), `--index`
-(if omitted, the first tappable one, otherwise the first on screen).
+header / selected / search / image / disabled), `--visible` (tappable), `--on-screen` (frame on screen, even if covered), `--containers`
+(also containers that have an id: a `.accessibilityElement(children: .contain)` with an identifier is not an element itself, so
+`tree` lists it only with this), `--index` (if omitted, the first tappable one, otherwise the first on screen).
 
 - A row's text is the label of a single button ("完成未看、platform 任务 4、12 分钟前、…", i.e. "Unread, platform task 4, 12 minutes ago, …"); unlike XCUITest you can't get the staticTexts inside it,
   so search with `--label-contains "、name、"`.

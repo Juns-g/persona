@@ -48,11 +48,23 @@ extension RuntimeCLI {
     }
 
     /// What VoiceOver's double tap does to the element `target` finds: a button's action, a menu opening.
-    /// `activated` false when the element does not take it (a menu's items).
+    /// `activated` false when the element does not take it (a menu's items). `action`: the element's custom action of
+    /// that name instead (VoiceOver's Actions rotor), as a failed bubble's Resend: a menu's item without a touch.
     private static func activate(_ a: Args) -> Reply {
         switch target(a) {
         case .failure(let f): return fail(f.why)
-        case .success(let e): return ["activated": e.object.accessibilityActivate(), "element": e.json]
+        case .success(let e):
+            guard let name = a["action"] as? String else {
+                return ["activated": e.object.accessibilityActivate(), "element": e.json]
+            }
+            let actions = e.object.accessibilityCustomActions ?? []
+            guard let action = actions.first(where: { $0.name == name }) else {
+                return fail("no action \(name): \(actions.map(\.name))")
+            }
+            if let run = action.actionHandler { return ["activated": run(action), "element": e.json] }
+            guard let t = action.target as? NSObject else { return fail("action \(name) does nothing") }
+            _ = t.perform(action.selector, with: action)
+            return ["activated": true, "element": e.json]
         }
     }
 

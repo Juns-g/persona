@@ -113,6 +113,7 @@ The clients draw the same states differently. A consumer maps what it draws onto
 | iOS / Mac | `apple/PersonaTests/Sync/SyncScenarioTests.swift`: the real `AppModel`, as Demo Mode drives it; a fake hub (`Sync/SyncHub.swift`) answers reads from the case and holds writes; a transport and a state folder per device, a test clock (#1112) | `known` in the test, each with its issue |
 | Android | `android/core/data/src/test/kotlin/persona/core/data/sync/ChatSyncScenariosTest.kt` (#1111): the real `HubChatRepository`, `HubInteractionCenter`, `OutboxMessageSender` and `HubSessionsRepository`, and the chat page's own taps and bubbles (`ChatTaps`); a fake hub answers reads from the case and holds writes (`sync/SyncDevice.kt`, `sync/SyncHub.kt`) | `KNOWN` in the test, each with the reason it must fail for |
 | Web, end to end | `web/e2e/sync-cases.mjs` (#2777): the real web app in a browser against the mock hub playing the case (below), one browser context per device | `KNOWN` in the runner, each with its issue |
+| iOS, end to end | `scripts/app/cli-tests/sync_cases.py` (#2952): the DEBUG app in the simulator against the mock hub playing the case, driven and read through the Runtime CLI (`docs/operations/runtime-cli.md`, "UI tests written with the CLI"); the app is one device and a two-device case's other device is scripted, once for each | `KNOWN` in the runner, each with its issue |
 
 ## The mock hub plays a case
 

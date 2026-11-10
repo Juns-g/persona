@@ -73,6 +73,8 @@ extension RuntimeCLI {
             let f = [frame.minX, frame.minY, frame.width, frame.height].map { $0.isFinite ? (Double($0) * 10).rounded() / 10 : 0 }
             var out: Reply = ["id": id, "label": label, "value": value, "traits": t, "visible": visible, "onScreen": onScreen, "frame": f]
             if container { out["container"] = true }
+            // Its custom actions (VoiceOver's Actions rotor), by name: what `activate` `action:` performs.
+            if let actions = object.accessibilityCustomActions, !actions.isEmpty { out["actions"] = actions.map(\.name) }
             return out
         }
     }
