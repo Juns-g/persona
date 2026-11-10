@@ -7,7 +7,9 @@ import XCTest
 /// over the home screen, back to the whole page and down again; and on the page, the two modes, the clipboard both
 /// ways, the keyboard and Help. TEST_RUNNER_PERSONA_VNC_PAUSE slows it down for a screen recording.
 final class VNCTests: XCTestCase {
-    private var hub: String? { ProcessInfo.processInfo.environment["PERSONA_SCREEN_HUB"] }
+    /// The mock this test talks to: TEST_RUNNER_PERSONA_SCREEN_HUB's, or a second one for a test that needs its own.
+    private var hubOverride: String?
+    private var hub: String? { hubOverride ?? ProcessInfo.processInfo.environment["PERSONA_SCREEN_HUB"] }
     private var pause: UInt32 { UInt32(ProcessInfo.processInfo.environment["PERSONA_VNC_PAUSE"] ?? "") ?? 0 }
 
     @MainActor private func launch(_ args: [String]) throws -> XCUIApplication {
@@ -367,7 +369,7 @@ final class VNCTests: XCTestCase {
         XCTAssertEqual(p.height, c.height, accuracy: 1)
         XCTAssertEqual(pip.label, "小窗")
         rest()
-        shot(app, "vnc-pip-button")
+        shot(app, "vnc-pip-button"); hold("vnc-pip-button")
 
         app.buttons["vnc-more"].tap()
         XCTAssertTrue(app.buttons["小窗诊断"].waitForExistence(timeout: 5))
@@ -428,7 +430,7 @@ final class VNCTests: XCTestCase {
         XCTAssertEqual(XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: tall, object: nil)], timeout: 10), .completed)
         rest(2)
         let upright = screen.frame
-        shot(app, "vnc-portrait")
+        shot(app, "vnc-portrait"); hold("vnc-portrait")
         for (name, orientation) in [("left", UIDeviceOrientation.landscapeLeft), ("right", .landscapeRight)] {
             XCUIDevice.shared.orientation = orientation
             XCTAssertEqual(XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: wide, object: nil)], timeout: 10), .completed,
@@ -485,7 +487,7 @@ final class VNCTests: XCTestCase {
         XCUIDevice.shared.orientation = .landscapeLeft
         rest(2)
         XCTAssertLessThan(window.frame.width, window.frame.height, "the app turned with the page closed: \(window.frame)")
-        shot(app, "vnc-closed-stays-upright")
+        shot(app, "vnc-closed-stays-upright"); hold("vnc-closed-stays-upright")
     }
 
     /// The Mac's picture fitted in a view, as VNCScreenUIView fits it.
@@ -545,22 +547,26 @@ final class VNCTests: XCTestCase {
         shot(app, "vnc-paste-refused")
     }
 
-    /// The Mac's pointer reads over black, white, gray and a dark terminal (#3075), against the mock started with
-    /// MOCK_SCREEN_BG=black (TEST_RUNNER_PERSONA_SCREEN_BG=1): a 1920×1080 Mac sending no pointer, as macOS's does (the
-    /// app's own arrow, which was solid black); with MOCK_SCREEN_CURSOR=1 it sends macOS's arrow, which drawn at the
-    /// picture's scale was 4 points tall. Screenshots of each for the eye.
+    /// The Mac's pointer reads over black, white, gray and a dark terminal (#3075), against a second mock started with
+    /// MOCK_SCREEN_BG=black, its address in TEST_RUNNER_PERSONA_SCREEN_BG: a 1920×1080 Mac sending no pointer, as macOS's
+    /// does (the app's own arrow, which was solid black); with MOCK_SCREEN_CURSOR=1 it sends macOS's arrow, which drawn at
+    /// the picture's scale was 4 points tall. A screenshot over each for the eye, all four taken before any check.
     @MainActor func testThePointerReads() throws {
-        guard ProcessInfo.processInfo.environment["PERSONA_SCREEN_BG"] == "1" else {
-            throw XCTSkip("needs the mock with plain backgrounds: MOCK_SCREEN_BG=black (TEST_RUNNER_PERSONA_SCREEN_BG=1)")
+        guard let bgHub = ProcessInfo.processInfo.environment["PERSONA_SCREEN_BG"], bgHub.hasPrefix("http") else {
+            throw XCTSkip("needs a mock with plain backgrounds: MOCK_SCREEN_BG=black, its address in TEST_RUNNER_PERSONA_SCREEN_BG")
         }
+        hubOverride = bgHub
         let (app, _) = try signedInMachinePage()
         let screen = app.descendants(matching: .any)["vnc-screen"].firstMatch
         XCTAssertTrue(screen.waitForExistence(timeout: 10))
+        var drawn: [(String, String)] = []
         for bg in ["black", "white", "gray", "terminal"] {
-            try mock(hub!, "/mock/screen-password?bg=\(bg)")
+            try mock(bgHub, "/mock/screen-password?bg=\(bg)")
             rest(2)
-            shot(app, "vnc-pointer-\(bg)")
-            let value = screen.value as? String ?? ""
+            shot(app, "vnc-pointer-\(bg)"); hold("vnc-pointer-\(bg)")
+            drawn.append((bg, screen.value as? String ?? ""))
+        }
+        for (bg, value) in drawn {
             let size = value.split(separator: ";").first { $0.hasPrefix("pointer=") }?.dropFirst("pointer=".count).split(separator: "x").compactMap { Double($0) } ?? []
             XCTAssertEqual(size.count, 2, value)
             XCTAssertGreaterThanOrEqual(size.last ?? 0, 22, "\(bg): the pointer is drawn readable: \(value)")
@@ -617,9 +623,9 @@ final class VNCTests: XCTestCase {
         return out
     }
 
-    /// TEST_RUNNER_PERSONA_HOLD=<seconds>: stays this long on its side so the host can take `xcrun simctl io <udid>
-    /// screenshot` (XCUITest's own screenshot comes out scrambled in landscape); a file `hold-<name>` in PERSONA_SHOTS
-    /// says what to name it, and goes once taken.
+    /// TEST_RUNNER_PERSONA_HOLD=<seconds>: stays this long so the host can take `xcrun simctl io <udid> screenshot`
+    /// (XCUITest's own comes out scrambled in landscape), in light and dark (`simctl ui <udid> appearance`); a file
+    /// `hold-<name>` in PERSONA_SHOTS says what to name it, and goes once taken.
     private func hold(_ name: String) {
         guard let seconds = ProcessInfo.processInfo.environment["PERSONA_HOLD"].flatMap(UInt32.init),
               let dir = ProcessInfo.processInfo.environment["PERSONA_SHOTS"] else { return }

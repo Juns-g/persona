@@ -150,7 +150,8 @@ final class VNCScreenUIView: UIView, UIGestureRecognizerDelegate {
 
     /// The Mac's pointer as drawn, `natural` points a pixel of the picture; nil: the app's own arrow.
     private func pointerArt(_ mac: RFBClient.Cursor?, natural: CGFloat) -> VNCPointerArt.Art? {
-        let scale = window?.screen.scale ?? traitCollection.displayScale
+        // The trait's, not the window's screen (which visionOS does not have); 0 only before the view is in a window.
+        let scale = traitCollection.displayScale > 0 ? traitCollection.displayScale : 2
         // The app's own arrow is drawn at the screen's scale already: as it is, a pixel a device pixel.
         let c: RFBClient.Cursor, perPoint: CGFloat, least: CGFloat
         if let mac, mac.width > 0 { (c, perPoint, least) = (mac, natural, Theme.Size.pointer) } else { (c, perPoint, least) = (Self.arrow(scale), 1 / scale, 0) }
