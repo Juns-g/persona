@@ -93,13 +93,11 @@ final class ScreenStepsCardTests: XCTestCase {
             let goAnswer = app.buttons["screen-review-answer"]
             XCTAssertTrue(goAnswer.waitForExistence(timeout: 20), "no review with a question left:\n\(app.debugDescription)")
             shot(app, "largest-review-\(scheme)")
-            app.scrollViews["pending-cards"].swipeUp()
-            XCTAssertTrue(clear(app, app.buttons["screen-review-submit-anyway"]), "Submit Without Them can't be reached")
-            XCTAssertTrue(clear(app, app.buttons["screen-card-terminal"].firstMatch), "the card's last row can't be reached")
+            XCTAssertTrue(reach(app, app.buttons["screen-review-submit-anyway"]), "Submit Without Them can't be reached")
+            XCTAssertTrue(reach(app, app.buttons["screen-card-terminal"].firstMatch), "the card's last row can't be reached")
             shot(app, "largest-review-end-\(scheme)")
             guard scheme == "light" else { app.terminate(); continue }
-            app.scrollViews["pending-cards"].swipeDown()
-            XCTAssertTrue(clear(app, goAnswer), "the main button can't be reached")
+            XCTAssertTrue(reach(app, goAnswer, down: true), "the main button can't be reached")
             goAnswer.tap()
             XCTAssertTrue(app.staticTexts["发完通知谁？"].waitForExistence(timeout: 10), "did not go back to the question left")
             shot(app, "largest-question")
@@ -146,6 +144,17 @@ final class ScreenStepsCardTests: XCTestCase {
         guard e.waitForExistence(timeout: 5), e.isHittable else { return false }
         let add = app.buttons["shell-composer-add"].firstMatch
         return !add.exists || e.frame.maxY <= add.frame.minY
+    }
+
+    /// Scrolls the cards (up, or back down) until `e` is clear of the message box: at the largest text sizes a review
+    /// is several swipes tall.
+    @MainActor private func reach(_ app: XCUIApplication, _ e: XCUIElement, down: Bool = false) -> Bool {
+        let cards = app.scrollViews["pending-cards"]
+        for _ in 0..<5 {
+            if clear(app, e) { return true }
+            if down { cards.swipeDown() } else { cards.swipeUp() }
+        }
+        return clear(app, e)
     }
 
     private func mock(_ path: String) { _ = try? Data(contentsOf: URL(string: hub + path)!) }
