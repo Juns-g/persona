@@ -175,7 +175,7 @@ private struct LiftTextView: UIViewRepresentable {
     func updateUIView(_ v: LiftUITextView, context: Context) {
         let menu = menu
         v.place = place
-        v.show(text, words, design: UIFontDescriptor.SystemDesign(context.environment.fontDesign))
+        v.show(text, words, design: UIFontDescriptor.SystemDesign(StyleSpec.current.fontDesign)) // the app's, as RootView sets it
         if let bar = menu.lift?.bar,
            let quote = menu.selectionQuote(of: SelectableText(text: bar.text, plain: bar.isUser, msg: bar.id, quotable: !bar.pending)) {
             v.quote = { picked in
@@ -199,8 +199,8 @@ private struct LiftTextView: UIViewRepresentable {
 
 extension UIFontDescriptor.SystemDesign {
     /// The style's design (`StyleSpec.fontDesign`, set on the whole app): Clay's words are rounded.
-    init(_ design: Font.Design?) {
-        self = switch design ?? .default {
+    init(_ design: Font.Design) {
+        self = switch design {
         case .rounded: .rounded
         case .serif: .serif
         case .monospaced: .monospaced
@@ -233,7 +233,7 @@ final class LiftUITextView: UITextView, UITextViewDelegate, UIEditMenuInteractio
     /// one that changes the selection is a handle's (or a press's, word by word), held at an edge it scrolls on (`edgeTick`).
     private var finger: CGPoint?
     private var touched: NSRange?
-    private var dragging: DraggedEnd?
+    private var draggedEnd: DraggedEnd?
     private var edgeLink: CADisplayLink?
 
     private enum DraggedEnd { case start, end }
@@ -390,8 +390,8 @@ final class LiftUITextView: UITextView, UITextViewDelegate, UIEditMenuInteractio
     }
 
     func textViewDidChangeSelection(_ textView: UITextView) {
-        if let touched, dragging == nil, selectedRange.length > 0, selectedRange != touched {
-            dragging = selectedRange.location != touched.location ? .start : .end
+        if let touched, draggedEnd == nil, selectedRange.length > 0, selectedRange != touched {
+            draggedEnd = selectedRange.location != touched.location ? .start : .end
         }
         if selectedRange.length > 0 {
             picked = true
@@ -412,7 +412,7 @@ final class LiftUITextView: UITextView, UITextViewDelegate, UIEditMenuInteractio
         finger = at
         if at == nil {
             touched = nil
-            dragging = nil
+            draggedEnd = nil
         }
         if edgeSpeed() == 0 {
             edgeLink?.invalidate()
@@ -434,7 +434,7 @@ final class LiftUITextView: UITextView, UITextViewDelegate, UIEditMenuInteractio
 
     /// Points a second the message scrolls on, for a handle held where the finger is (`LiftLayout.edgeScroll`).
     private func edgeSpeed() -> CGFloat {
-        guard dragging != nil, let finger, let s = scroller else { return 0 }
+        guard draggedEnd != nil, let finger, let s = scroller else { return 0 }
         return LiftLayout.edgeScroll(at: s.convert(finger, from: nil).y - s.bounds.minY, height: s.bounds.height,
                                      band: Theme.Lift.edgeScroll, speed: Theme.Lift.edgeScrollSpeed)
     }
@@ -452,8 +452,8 @@ final class LiftUITextView: UITextView, UITextViewDelegate, UIEditMenuInteractio
 
     /// The dragged end of the selection to the words under the finger; the ends never cross.
     private func extendSelection(to finger: CGPoint) {
-        guard let dragging, let r = selectedTextRange, let at = closestPosition(to: convert(finger, from: nil)) else { return }
-        let next: UITextRange? = switch dragging {
+        guard let draggedEnd, let r = selectedTextRange, let at = closestPosition(to: convert(finger, from: nil)) else { return }
+        let next: UITextRange? = switch draggedEnd {
         case .start: compare(at, to: r.end) == .orderedAscending ? textRange(from: at, to: r.end) : nil
         case .end: compare(at, to: r.start) == .orderedDescending ? textRange(from: r.start, to: at) : nil
         }

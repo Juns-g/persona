@@ -37,8 +37,9 @@ struct MessageLift {
     var environment: EnvironmentValues? = nil
 }
 
-/// Where a pressable part is, written on every scrolled frame without drawing anything again (not observed).
-final class LiftPlace {
+/// Where a pressable part is, written on every scrolled frame without drawing anything again (not observed). Written
+/// during layout too (`RecordsOffer`), which is not the main actor's.
+nonisolated final class LiftPlace {
     nonisolated struct Frames: Equatable {
         var global: CGRect = .zero
         /// In its row's coordinates (`MessageMenu.row`), where the press is reported.
