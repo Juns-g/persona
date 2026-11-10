@@ -526,6 +526,18 @@ off, three days. The link is shown once with a copy action and is never listed a
 separate, read-only document with the same palette tokens, plain text only and work details collapsed (section 4.7).
 Web: `web/src/sharing/`, `web/public-share/`; Android: `AgentShareSheet`; server contract in #3604.
 
+### 4.10 Questions of several
+
+A card that asks several questions at once (a terminal dialog of several on iPhone and iPad, #2970) shows where it is and
+lets the answers be checked before they go (a pending request, section 4.8):
+
+- **Step capsules** (`ScreenSteps`, `BUIScreenSteps` in `apple/Persona/Views/Interactions/InteractionViews.swift`): one per
+  question, ticked once answered, the current one in the accent. They show progress only and are not buttons.
+- **Previous / Next** move one question at a time. A question gone back to shows the answer it had.
+- **The review** (`ScreenReview`, `apple/Persona/Views/Interactions/ScreenReview.swift`): a row per question, Previous and
+  **Submit N Answers**. A question left reads **Not answered** in the caution color; the main button then goes to it,
+  and **Submit Without Them** sends the rest. At the largest text sizes the buttons stack, the main one first.
+
 ## 5. Content
 
 ### 5.1 Voice and tone
