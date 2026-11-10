@@ -1631,3 +1631,15 @@ A worktree's display name and its Agents' conversation names are different comma
 ## Configuration refusals are not retryable connection failures (#1915)
 
 HTTP failures live in `Shared/APIClient.swift`, not PersonaKit's model-response `APIErrorInfo`. Classify business codes before status or timeout wording. A background sync must pause on disabled/read-only configuration without discarding uploads or deletion intent; another local save cannot repair that configuration. Reopen/foreground can explicitly recheck. Do not continue writes after failed reconciliation, and do not acknowledge a remote deletion from an unsupported 404. Keep the list's pending-delete explanation durable across relaunch.
+
+## The link card's pooled web views share one script handler table (2026-11-10, #150)
+
+`WebViewPool`'s web views are made from one `WKWebViewConfiguration`, so they share its `WKUserContentController`: a script
+message handler added for one page answers for every page in the pool, and adding a second one under the same name throws.
+The preview's element picking (`ElementPicker`, `docs/web/preview.md` "iPhone") removes any handler of its name, adds its own
+(held weakly) when picking starts, checks that a message came from its own view's main frame, and removes the handler when
+picking ends or the card goes away. The pick script runs in the page's own world, not an isolated one: what React, Vue and
+Svelte dev builds leave on an element (the component, its source) is only visible there.
+
+A preview page also changes documents under the picker: a reload or a link drops the injected listeners, so picking ends when
+the page starts loading rather than leaving a banner that no longer does anything.
