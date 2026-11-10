@@ -2,12 +2,13 @@
 import SwiftUI
 import UIKit
 
-/// Acting on the app (docs/operations/runtime-cli.md「Actions and screenshots」): `activate`, `scroll`, `type`, `dismiss-keyboard`, `snapshot`,
-/// `pasteboard`, `share`.
+/// Acting on the app (docs/operations/runtime-cli.md「Actions and screenshots」): `activate`, `alert`, `scroll`, `type`, `dismiss-keyboard`,
+/// `snapshot`, `pasteboard`, `share`.
 /// A real touch (a menu's items, which take no accessibility activation) is `personactl.py tap`'s fallback: `idb`.
 extension RuntimeCLI {
     static let actionCommands: [String: Command] = [
         "activate": { a in activate(a) },
+        "alert": { a in await alert(a) },
         "scroll": { a in scroll(a) },
         "type": { a in type(a) },
         "dismiss-keyboard": { _ in windows.forEach { $0.endEditing(true) }; return [:] },
@@ -66,6 +67,32 @@ extension RuntimeCLI {
             _ = t.perform(action.selector, with: action)
             return ["activated": true, "element": e.json]
         }
+    }
+
+    /// The alert the app shows (SwiftUI's `.alert` is a `UIAlertController`): its `title` and `buttons`; with `button`,
+    /// that one pressed, as a tap does (the alert goes, then its action runs). Its buttons take no accessibility
+    /// activation, and a touch needs idb.
+    private static func alert(_ a: Args) async -> Reply {
+        var shown: UIAlertController?
+        for w in windows where !w.isHidden {
+            var vc = w.rootViewController
+            while let v = vc, shown == nil {
+                if let alert = v as? UIAlertController, !alert.isBeingDismissed { shown = alert }
+                vc = v.presentedViewController
+            }
+        }
+        guard let shown else { return fail("no alert") }
+        let buttons = shown.actions.compactMap(\.title)
+        guard let title = a["button"] as? String else { return ["title": shown.title ?? "", "buttons": buttons] }
+        guard let action = shown.actions.first(where: { $0.title == title }) else { return fail("no button \(title): \(buttons)") }
+        // The action's handler is UIKit's to keep (no public way to press it): the alert's own block, as a tap calls it.
+        typealias Handler = @convention(block) (UIAlertAction) -> Void
+        let handler = (action.value(forKey: "handler") as AnyObject?).map { unsafeBitCast($0, to: Handler.self) }
+        await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in
+            shown.dismiss(animated: false) { done.resume() }
+        }
+        handler?(action)
+        return ["pressed": title, "buttons": buttons]
     }
 
     /// The largest scroll view on screen, moved by `pages` screens (negative: up; 0.8 of its height each) or `to` top /

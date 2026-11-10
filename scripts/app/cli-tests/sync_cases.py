@@ -74,13 +74,6 @@ def words(s):
     return re.sub(r"\s+", " ", s or "").strip()
 
 
-def inside(leaf, box):
-    x, y, w, h = leaf["frame"]
-    bx, by, bw, bh = box["frame"]
-    cx, cy = x + w / 2, y + h / 2
-    return bx <= cx <= bx + bw and by <= cy <= by + bh
-
-
 class App:
     """The app as one device of the case: launched, driven and read through the runtime CLI."""
 
@@ -136,15 +129,18 @@ class App:
         except CtlError:
             pass
 
+    def marked(self, prefix="chat."):
+        """The chat's marks, top to bottom, each with the elements it holds (by the tree, not by where they are drawn:
+        an alert over a bubble is not in it). Rows scrolled out of sight count: the chat's list keeps them."""
+        els = self.c.call("tree", containers=True)["elements"]
+        marks = sorted((e for e in els if e.get("container") and e["id"].startswith(prefix)), key=lambda e: e["frame"][1])
+        return [(m, [e for e in els if not e.get("container") and e.get("in") == m["id"]]) for m in marks]
+
     def look(self):
         """What the chat shows, as a case's view."""
-        els = [e for e in self.c.call("tree", containers=True)["elements"] if e.get("onScreen")]
-        marks = sorted((e for e in els if e.get("container") and e["id"].startswith("chat.")), key=lambda e: e["frame"][1])
-        leaves = [e for e in els if not e.get("container")]
         view = {"messages": [], "cards": {}, "live": None}
-        for m in marks:
+        for m, inner in self.marked():
             parts = m["id"].split(".")
-            inner = [e for e in leaves if inside(e, m)]
             text = words(" ".join(e["label"] for e in inner if "text" in e["traits"] and "button" not in e["traits"]))
             if parts[1] == "user":
                 view["messages"].append({"from": "user", "text": text, "state": "shown"})
@@ -177,21 +173,21 @@ class App:
 
     def close_alert(self):
         """A refusal for a draft on the computer asks first (Clear and Send / Not Now): the user closes it to use the
-        bubble's own Resend."""
-        for label in NOT_NOW:
-            if self.c.call("tree", label=label, trait="button", onScreenOnly=True)["elements"]:
-                self.c.call("activate", label=label, trait="button")
-                self.c.call("wait", label=label, trait="button", gone=True, timeout=5)
-                return
+        bubble's own Resend. Its buttons take no accessibility activation: the runtime CLI's `alert` presses one."""
+        try:
+            shown = self.c.call("alert")
+        except CtlError:  # no alert
+            return
+        label = next((b for b in NOT_NOW if b in shown["buttons"]), None)
+        if not label:
+            raise CtlError("an alert %r without %s: %s" % (shown["title"], NOT_NOW[0], shown["buttons"]))
+        self.c.call("alert", button=label)
 
     def on_failed(self, text, names):
         """Resend or Delete (`names`: the item's label in each language) on the failed bubble with these words: the
         items of its menu, done as its accessibility actions (no touch reaches a menu's items without idb)."""
         self.close_alert()
-        els = [e for e in self.c.call("tree", containers=True)["elements"] if e.get("onScreen")]
-        leaves = [e for e in els if not e.get("container")]
-        for m in (e for e in els if e.get("container") and e["id"].startswith("chat.outbox.failed.")):
-            inner = [e for e in leaves if inside(e, m)]
+        for m, inner in self.marked("chat.outbox.failed."):
             if words(text) not in words(" ".join(e["label"] for e in inner)):
                 continue
             menu = next((e for e in inner if e.get("actions")), None)
@@ -204,15 +200,14 @@ class App:
         raise CtlError("no failed bubble %r on screen" % text)
 
     def answer(self, ix, allow):
-        cards = [e for e in self.c.call("tree", containers=True, id="chat.card." + ix)["elements"] if e.get("container")]
-        if not cards:
+        card = [inner for m, inner in self.marked("chat.card.") if m["id"] == "chat.card." + ix]
+        if not card:
             raise CtlError("no card %s on screen" % ix)
         for label in (ALLOW if allow else DENY):
-            matches = self.c.call("tree", label=label, trait="button")["elements"]
-            for i, e in enumerate(matches):
-                if inside(e, cards[0]):
-                    self.c.call("activate", label=label, trait="button", index=i)
-                    return
+            button = next((e for e in card[0] if e["label"] == label and "button" in e["traits"]), None)
+            if button:
+                self.c.call("activate", label=label, trait="button", index=self.nth(button, label=label, trait="button"))
+                return
         raise CtlError("no %s on card %s" % ("Allow" if allow else "Deny", ix))
 
 
@@ -278,7 +273,8 @@ def play(c, hub, file, case, me, out):
     """One run of `case` with the app as device `me`: the failures, in order, and where the screen was saved when
     there were some (`out`, before the app goes)."""
     failures, trace, saved = [], "", None
-    status, loaded = mock(hub, "/mock/case/load", {"case": "%s#%s" % (file, case["name"])})
+    # its times moved to now: the simulator runs on the real clock (the web's runner pins its clock to the case's)
+    status, loaded = mock(hub, "/mock/case/load", {"case": "%s#%s" % (file, case["name"]), "now": True})
     if status != 200:
         return ["load: %s" % loaded], None
     chat = case["chat"]

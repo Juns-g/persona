@@ -21,6 +21,7 @@
   personactl.py wait-loaded [--session m/s] [--timeout s]                      the chat on screen has its history from the hub
   personactl.py tap [filters] [--hid] [--allow-hidden]                         activate it; a real touch (idb) if it does not take that
   personactl.py tap [filters] --action NAME                                    its custom accessibility action (a menu's item it offers)
+  personactl.py alert [--button T]                                             the app's alert: its buttons, or press one
   personactl.py longpress [filters] [--duration s]                             a real touch held on it (idb)
   personactl.py swipe [filters] --dir left|right|up|down [--distance pt] [--duration s]   a real swipe across it
   personactl.py drag --from x,y --to x,y [--duration s]                        a real finger between two points (pt)
@@ -465,6 +466,7 @@ def main(argv):
     p.add_argument("--from", dest="start")
     p.add_argument("--seconds", type=float)
     p.add_argument("--text")
+    p.add_argument("--button")
     p.add_argument("--pages", type=float)
     p.add_argument("--to")
     p.add_argument("--env")
@@ -540,6 +542,8 @@ def main(argv):
             p.error("snapshot needs a path")
         r = {"path": c.screenshot(os.path.abspath(a.rest[0]), settle=False)} if c.via_hub else \
             c.call("snapshot", path=os.path.abspath(a.rest[0]))
+    elif a.cmd == "alert":
+        r = c.call("alert", button=a.button)
     elif a.cmd in ("perf", "refresh", "dismiss-keyboard"):
         r = c.call(a.cmd)
     elif a.cmd == "call":
