@@ -960,7 +960,7 @@ func areaTest(ctx context.Context, t target, cred credentials, browser string) e
 // trace runs one scene on a connection asking as mode does and prints, in order, each request going out and each
 // update's start, end, size and painted area, in milliseconds from the start: how the server answers each way of
 // asking.
-func trace(ctx context.Context, t target, cred credentials, scene, mode string, d time.Duration) error {
+func trace(ctx context.Context, t target, cred credentials, scene, mode string, d time.Duration, area image.Rectangle) error {
 	b, err := newBench()
 	if err != nil {
 		return err
@@ -1004,6 +1004,12 @@ func trace(ctx context.Context, t target, cred credentials, scene, mode string, 
 	}
 	if err := p.first(); err != nil {
 		return err
+	}
+	if !area.Empty() {
+		// Once the first (whole) update is in, only this part from then on.
+		p.waitUpdates(1, 10*time.Second)
+		p.area.Store(area)
+		_ = c.Request(true, area)
 	}
 	time.Sleep(d)
 	mu.Lock()

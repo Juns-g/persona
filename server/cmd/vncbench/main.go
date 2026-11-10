@@ -15,6 +15,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"image"
 	"os"
 	"os/signal"
 	"syscall"
@@ -46,6 +47,7 @@ func main() {
 	privStep := fs.Int("step", 20, "private: encodings asked at once")
 	dumpEnc := fs.Int("enc", 1000, "dump: the encoding")
 	traceScene := fs.String("scene", "video", "trace: the bench page's scene")
+	traceArea := fs.String("trace-area", "", "trace: x,y,w,h: after the first update, ask for this part only")
 	dumpN := fs.Int("n", 256, "dump: bytes shown")
 	dumpOut := fs.String("raw", "", "dump: also write every byte that came to this file")
 	relayPort := fs.Int("port", 38777, "relay: the echo server's port on this machine")
@@ -82,7 +84,14 @@ func main() {
 	case "dump":
 		err = dump(ctx, t, cred, int32(*dumpEnc), *dumpN, 3*time.Second, *dumpOut)
 	case "trace":
-		err = trace(ctx, t, cred, *traceScene, *recMode, *recFor)
+		var area image.Rectangle
+		if *traceArea != "" {
+			var x, y, w, h int
+			if _, serr := fmt.Sscanf(*traceArea, "%d,%d,%d,%d", &x, &y, &w, &h); serr == nil {
+				area = image.Rect(x, y, x+w, y+h)
+			}
+		}
+		err = trace(ctx, t, cred, *traceScene, *recMode, *recFor, area)
 	case "area":
 		err = areaTest(ctx, t, cred, "Safari")
 	case "private":
