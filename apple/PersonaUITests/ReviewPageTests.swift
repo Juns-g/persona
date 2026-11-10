@@ -73,6 +73,31 @@ final class ReviewPageTests: XCTestCase {
         mock("/mock/review?mode=1")
     }
 
+    /// At the largest accessibility text size: the page, a comment under picked lines and the finish sheet, drawn whole.
+    @MainActor func testTheLargestTextSize() throws {
+        for scheme in ["light", "dark"] {
+            let app = launch(scheme: scheme, size: "UICTContentSizeCategoryAccessibilityXXXL")
+            openReview(app)
+            let lines = app.descendants(matching: .any).matching(identifier: "review.line")
+            XCTAssertTrue(lines.firstMatch.waitForExistence(timeout: 20), "no diff lines:\n\(app.debugDescription)")
+            shot(app, "largest-page-\(scheme)")
+            guard scheme == "light" else { app.terminate(); continue }
+            gutter(lines.element(boundBy: 1))
+            let note = app.descendants(matching: .any)["review.note"].firstMatch
+            XCTAssertTrue(note.waitForExistence(timeout: 5), "no comment under the picked line")
+            note.tap()
+            note.typeText("Keep the old name")
+            shot(app, "largest-comment")
+            app.buttons["plugin-ui-action-review.add"].tap()
+            XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "review.draft").firstMatch.waitForExistence(timeout: 5), "no draft")
+            app.buttons["review.finish"].tap()
+            let send = app.buttons["review.send"]
+            XCTAssertTrue(send.waitForExistence(timeout: 5) && send.isHittable, "no Send Review in the finish sheet")
+            shot(app, "largest-finish")
+            app.terminate()
+        }
+    }
+
     // MARK: Helpers
 
     @MainActor private func openReview(_ app: XCUIApplication) {
@@ -93,11 +118,12 @@ final class ReviewPageTests: XCTestCase {
         row.coordinate(withNormalizedOffset: CGVector(dx: 0.04, dy: 0.5)).tap()
     }
 
-    @MainActor private func launch(scheme: String = "light") -> XCUIApplication {
+    @MainActor private func launch(scheme: String = "light", size: String? = nil) -> XCUIApplication {
         let app = XCUIApplication()
         let pair = "persona://pair?url=" + hub.addingPercentEncoding(withAllowedCharacters: .alphanumerics)! + "&token=mock"
         app.launchArguments = ["-pairURL", pair, "-tab", "dev", "-app.tab", "chats", "-dev.openChat", widget, "-openSession", widget,
                                "-openChatsFresh", "YES", "-ui.scheme", scheme]
+        if let size { app.launchArguments += ["-UIPreferredContentSizeCategoryName", size] }
         app.launchPinned()
         dismissAlerts()
         return app
