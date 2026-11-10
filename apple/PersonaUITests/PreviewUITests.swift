@@ -40,12 +40,13 @@ final class PreviewUITests: XCTestCase {
         XCTAssertTrue(e.waitForExistence(timeout: timeout), "\(what):\n\(app.debugDescription.prefix(4000))")
     }
 
-    @MainActor private func openServers(_ app: XCUIApplication) {
+    @MainActor private func openServers(_ app: XCUIApplication, shoot: Bool = false) {
         let more = app.buttons.matching(NSPredicate(format: "label == %@", "更多")).firstMatch
         see(more, "no ⋯", app)
         more.tap()
         let item = app.buttons["预览"].firstMatch
         see(item, "no 预览 in the chat's menu", timeout: 5, app)
+        if shoot { sleep(1); shot(app, "menu") }
         item.tap()
     }
 
@@ -56,7 +57,7 @@ final class PreviewUITests: XCTestCase {
         app.launchPinned()
 
         // The servers: launch.json's first, the Agent's Storybook port after, the broken entry said why.
-        openServers(app)
+        openServers(app, shoot: true)
         let web = app.buttons["preview-server-web"]
         see(web, "the running web server is not listed", app)
         see(app.staticTexts["Storybook"], "the Agent's port is not listed", app)
