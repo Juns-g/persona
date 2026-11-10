@@ -5,7 +5,8 @@ import XCTest
 /// than the screen, whose bar must be on screen without scrolling; and an answer in Persona's conversation, in its box.
 /// An answer taller than the screen scrolls inside the lift to its first line, with the bar staying put, in an Agents
 /// chat and in Persona's conversation, and a selection handle dragged to its top edge scrolls it on (#3188).
-/// PERSONA_LIFT_SCHEME: light or dark.
+/// PERSONA_LIFT_SCHEME: light or dark, or "light,dark": the tests of #3188 run in each, one after the other.
+/// PERSONA_LIFT_KEEP_GOING=1: a test goes on past a failure (to record a build without the fix to its end).
 final class MessageLiftUITests: XCTestCase {
     private var app: XCUIApplication!
     private var hub = ""
@@ -15,10 +16,12 @@ final class MessageLiftUITests: XCTestCase {
     private let askLong = "server/b2e4d6f8-0000-4000-8000-0000000c1e09"
     /// An answer a little shorter than a small phone's screen, in another.
     private let askMid = "server/b2e4d6f8-0000-4000-8000-0000000c1e0a"
-    private var scheme: String { ProcessInfo.processInfo.environment["PERSONA_LIFT_SCHEME"] ?? "light" }
+    private let schemes = (ProcessInfo.processInfo.environment["PERSONA_LIFT_SCHEME"] ?? "light").split(separator: ",").map(String.init)
+    private var scheme = "light"
 
     override func setUpWithError() throws {
-        continueAfterFailure = false
+        continueAfterFailure = ProcessInfo.processInfo.environment["PERSONA_LIFT_KEEP_GOING"] == "1"
+        scheme = schemes.first ?? "light"
         guard let hub = ProcessInfo.processInfo.environment["PERSONA_MOCK_HUB"] else {
             throw XCTSkip("needs scripts/mock/mock_hub.py (PERSONA_MOCK_HUB)")
         }
@@ -100,6 +103,15 @@ final class MessageLiftUITests: XCTestCase {
 
     // MARK: A lifted answer taller than the screen scrolls (#3188)
 
+    /// Runs `body` in each of PERSONA_LIFT_SCHEME's schemes, the app launched again for each.
+    @MainActor private func inEachScheme(_ body: () throws -> Void) rethrows {
+        for s in schemes {
+            scheme = s
+            app = XCUIApplication()
+            try body()
+        }
+    }
+
     /// The lifted copy (`MessageLiftLayer`).
     private var lifted: XCUIElement { app.descendants(matching: .any)["message-lift"].firstMatch }
     /// The long answer's first line, its heading, in the lifted copy.
@@ -160,50 +172,58 @@ final class MessageLiftUITests: XCTestCase {
 
     /// In an Agents chat.
     @MainActor func testALongAnswerScrollsToItsFirstLine() throws {
-        launch(long)
-        checkTheLongAnswerScrollsToItsFirstLine("scroll")
+        inEachScheme {
+            launch(long)
+            checkTheLongAnswerScrollsToItsFirstLine("scroll")
+        }
     }
 
     /// In Persona's conversation, whose top bar floats over the chat: the lifted copy is drawn over the bar too.
     @MainActor func testALongAnswerInPersonasConversationScrollsToItsFirstLine() throws {
-        launchPersona(askLong)
-        checkTheLongAnswerScrollsToItsFirstLine("persona-scroll")
+        inEachScheme {
+            launchPersona(askLong)
+            checkTheLongAnswerScrollsToItsFirstLine("persona-scroll")
+        }
     }
 
     /// The case reported (#3188): an answer that fits beside the bar, so it lifts whole and does not scroll, pressed while
-    /// its top is where Persona's top bar floats. The lift is drawn over the bar, the whole page dimmed: the bar takes no
-    /// taps, and the answer's first line shows.
+    /// its top is where Persona's top bar floats. The lift is drawn over the bar, the whole page dimmed: the bar, under
+    /// the dimming, takes no taps (in the build before, it was over the answer's first lines).
     @MainActor func testAnAnswerUnderPersonasTopBarLiftsOverIt() throws {
-        launchPersona(askMid)
-        let avatar = app.buttons["persona-avatar"].firstMatch
-        XCTAssertTrue(avatar.waitForExistence(timeout: 20), "no top bar")
-        liftAt("要我先带你看哪一块")
-        XCTAssertTrue(lifted.waitForExistence(timeout: 3), "no lifted copy")
-        XCTAssertFalse(avatar.isHittable, "the top bar is over the lifted message")
-        shot("persona-mid")
+        inEachScheme {
+            launchPersona(askMid)
+            let avatar = app.buttons["persona-avatar"].firstMatch
+            XCTAssertTrue(avatar.waitForExistence(timeout: 20), "no top bar")
+            liftAt("要我先带你看哪一块")
+            XCTAssertTrue(lifted.waitForExistence(timeout: 3), "no lifted copy")
+            XCTAssertFalse(avatar.isHittable, "the top bar is over the lifted message")
+            shot("persona-mid")
+        }
     }
 
     /// Select Text on the long answer lifted at its end, then the selection's end handle dragged to the lifted copy's
     /// top edge and held there: the copy scrolls on up to its first line, as a text view does.
     @MainActor func testAHandleAtTheTopEdgeScrollsTheLiftedAnswer() throws {
-        launch(long)
-        liftTheLongAnswerAtItsEnd()
-        app.buttons["选择文本"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.85)).tap()
-        let words = app.textViews["lift-text"]
-        XCTAssertTrue(words.waitForExistence(timeout: 5), "选择文本 did not select the words in place")
-        sleep(1)
-        // A paragraph's frame hugs its words: the end handle is under the last one's end.
-        let last = try XCTUnwrap(words.textViews.allElementsBoundByIndex.last { !$0.label.isEmpty }, "no paragraphs:\n\(words.debugDescription)").frame
-        let top = words.frame.minY, edge = lifted.frame.minY
-        XCTAssertLessThan(top, edge - 200, "the words start well out of sight")
-        shot("handle-start")
-        let origin = app.coordinate(withNormalizedOffset: .zero)
-        origin.withOffset(CGVector(dx: last.maxX - 1, dy: last.maxY + 4))
-            .press(forDuration: 0.5, thenDragTo: origin.withOffset(CGVector(dx: app.frame.midX, dy: edge + 4)),
-                   withVelocity: .default, thenHoldForDuration: 4)
-        sleep(1)
-        XCTAssertGreaterThanOrEqual(words.frame.minY, edge, "held at the top edge, the handle scrolled the lifted copy up to its first line")
-        XCTAssertTrue(app.textViews["lift-text"].exists, "still selecting")
-        shot("handle-top")
+        try inEachScheme {
+            launch(long)
+            liftTheLongAnswerAtItsEnd()
+            app.buttons["选择文本"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.85)).tap()
+            let words = app.textViews["lift-text"]
+            XCTAssertTrue(words.waitForExistence(timeout: 5), "选择文本 did not select the words in place")
+            sleep(1)
+            // A paragraph's frame hugs its words: the end handle is under the last one's end.
+            let last = try XCTUnwrap(words.textViews.allElementsBoundByIndex.last { !$0.label.isEmpty }, "no paragraphs:\n\(words.debugDescription)").frame
+            let top = words.frame.minY, edge = lifted.frame.minY
+            XCTAssertLessThan(top, edge - 200, "the words start well out of sight")
+            shot("handle-start")
+            let origin = app.coordinate(withNormalizedOffset: .zero)
+            origin.withOffset(CGVector(dx: last.maxX - 1, dy: last.maxY + 4))
+                .press(forDuration: 0.5, thenDragTo: origin.withOffset(CGVector(dx: app.frame.midX, dy: edge + 4)),
+                       withVelocity: .default, thenHoldForDuration: 4)
+            sleep(1)
+            XCTAssertGreaterThanOrEqual(words.frame.minY, edge, "held at the top edge, the handle scrolled the lifted copy up to its first line")
+            XCTAssertTrue(app.textViews["lift-text"].exists, "still selecting")
+            shot("handle-top")
+        }
     }
 }
