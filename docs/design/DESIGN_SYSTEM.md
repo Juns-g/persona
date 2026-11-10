@@ -528,8 +528,9 @@ Web: `web/src/sharing/`, `web/public-share/`; Android: `AgentShareSheet`; server
 
 ### 4.10 Questions of several
 
-A card that asks several questions at once (a terminal dialog of several on iPhone and iPad, #2970) shows where it is and
-lets the answers be checked before they go (a pending request, section 4.8):
+A card that asks several questions at once shows where it is and lets the answers be checked before they go (a pending
+request, section 4.8). On iPhone and iPad (#2970) that is a terminal dialog of several, and a hook question of several:
+Claude Code's AskUserQuestion, the assistant's ask_user and Codex's questions.
 
 - **Step capsules** (`ScreenSteps`, `BUIScreenSteps` in `apple/Persona/Views/Interactions/InteractionViews.swift`): one per
   question, ticked once answered, the current one in the accent. They show progress only and are not buttons.
@@ -537,6 +538,9 @@ lets the answers be checked before they go (a pending request, section 4.8):
 - **The review** (`ScreenReview`, `apple/Persona/Views/Interactions/ScreenReview.swift`): a row per question, Previous and
   **Submit N Answers**. A question left reads **Not answered** in the caution color; the main button then goes to it,
   and **Submit Without Them** sends the rest. At the largest text sizes the buttons stack, the main one first.
+- **BeautifulUI's hook card** keeps its own ↑ n / N ↓ counter instead of capsules; a question skipped with ↓ shows in the
+  review as not answered, and its main button opens the card at that question with every answer kept.
+- **The plan pill folds** while a card asks something, so it never sits over the card's buttons.
 
 ## 5. Content
 
