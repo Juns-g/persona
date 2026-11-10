@@ -233,6 +233,7 @@ struct PreviewPage: View {
     var onSelect: (String, String) -> Void
     @State private var nav = WebNav()
     @State private var picker = ElementPicker()
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var picking = false
     /// DEBUG: picking starts once the page has loaded.
     @State private var pickWhenLoaded = PreviewPage.startsPicking
@@ -257,13 +258,13 @@ struct PreviewPage: View {
         VStack(spacing: Theme.Space.flush) {
             PooledWebView(url: url, title: $title, nav: nav, onPick: onSelect)
                 .overlay(alignment: .top) {
-                    if picking && picked == nil { banner.transition(.move(edge: .top).combined(with: .opacity)) }
+                    if picking && picked == nil { banner.transition(reduceMotion ? AnyTransition.opacity : AnyTransition.move(edge: .top).combined(with: .opacity)) }
                 }
             Divider()
             if let picked { notePanel(picked) } else { bar }
         }
-        .animation(Theme.Motion.state, value: picking)
-        .animation(Theme.Motion.state, value: picked)
+        .animation(reduceMotion ? nil : Theme.Motion.state, value: picking)
+        .animation(reduceMotion ? nil : Theme.Motion.state, value: picked)
         // A new document drops the page's listeners: picking ends with it.
         .onChange(of: nav.isLoading) { _, loading in
             if loading {
@@ -347,16 +348,19 @@ struct PreviewPage: View {
             do {
                 let image: UIImage
                 if whole { image = try await PageShot.whole(v) } else { image = try await PageShot.visible(v) }
-                var inbox: [UIImage] = model.composerInbox[key] ?? []
-                inbox.append(image)
-                model.composerInbox[key] = inbox
-                Haptics.success()
-                model.toast = Toast(String(localized: "Screenshot added to your message"), style: .success)
+                attach(image)
             } catch {
                 Haptics.error()
                 model.toast = Toast(String(localized: "Couldn't take the screenshot. Try again."), style: .error)
             }
         }
+    }
+
+    /// The screenshot goes to the message box, like a photo attached there.
+    private func attach(_ image: UIImage) {
+        model.composerInbox[key, default: []].append(image)
+        Haptics.success()
+        model.toast = Toast(String(localized: "Screenshot added to your message"), style: .success)
     }
 
     // MARK: Picking
@@ -435,7 +439,7 @@ struct PreviewPage: View {
         .padding(.horizontal, Theme.Space.l)
         .padding(.vertical, Theme.Space.m)
         .background(Theme.pageBackground)
-        .transition(.move(edge: .bottom).combined(with: .opacity))
+        .transition(reduceMotion ? AnyTransition.opacity : AnyTransition.move(edge: .bottom).combined(with: .opacity))
     }
 
     private func add(_ el: PickedElement) {
