@@ -2,6 +2,7 @@ import MarkdownUI
 import SwiftUI
 #if os(iOS) || os(visionOS)
 import UIKit
+import UIKit.UIGestureRecognizerSubclass
 #endif
 
 // MARK: - A lifted message's words, selected where they are (#603)
@@ -111,6 +112,48 @@ struct LiftPress: UIGestureRecognizerRepresentable {
 }
 #endif
 
+/// Follows one finger on a view, in the window, and nil once it is up, without taking it from anything: it never
+/// recognizes and nothing prevents it, so a handle's drag, the scrolling around it and taps all go on as before.
+private final class FingerFollower: UIGestureRecognizer {
+    private let moved: (CGPoint?) -> Void
+
+    init(_ moved: @escaping (CGPoint?) -> Void) {
+        self.moved = moved
+        super.init(target: nil, action: nil)
+        cancelsTouchesInView = false
+        delaysTouchesEnded = false
+    }
+
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
+        super.touchesBegan(touches, with: event)
+        guard event.allTouches?.count == 1, let t = touches.first else { return finish() }
+        moved(t.location(in: nil))
+    }
+
+    override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent) {
+        super.touchesMoved(touches, with: event)
+        if let t = touches.first { moved(t.location(in: nil)) }
+    }
+
+    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent) {
+        super.touchesEnded(touches, with: event)
+        finish()
+    }
+
+    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent) {
+        super.touchesCancelled(touches, with: event)
+        finish()
+    }
+
+    private func finish() {
+        state = .failed
+        moved(nil)
+    }
+
+    override func canPrevent(_ preventedGestureRecognizer: UIGestureRecognizer) -> Bool { false }
+    override func canBePrevented(by preventingGestureRecognizer: UIGestureRecognizer) -> Bool { false }
+}
+
 private struct LiftTextView: UIViewRepresentable {
     var text: String
     var words: LiftWords
@@ -161,6 +204,14 @@ final class LiftUITextView: UITextView, UITextViewDelegate, UIEditMenuInteractio
     var quote: ((String) -> Void)?
     var ended: () -> Void = {}
     var copied: () -> Void = {}
+    /// A finger on the words (in the window), the selection when it went down, and which end of it the finger drags:
+    /// one that changes the selection is a handle's (or a press's, word by word), held at an edge it scrolls on (`edgeTick`).
+    private var finger: CGPoint?
+    private var touched: NSRange?
+    private var dragging: DraggedEnd?
+    private var edgeLink: CADisplayLink?
+
+    private enum DraggedEnd { case start, end }
 
     init() {
         let container = NSTextContainer(size: CGSize(width: 0, height: CGFloat.greatestFiniteMagnitude))
@@ -182,6 +233,7 @@ final class LiftUITextView: UITextView, UITextViewDelegate, UIEditMenuInteractio
         behind.layer.zPosition = -1 // under every other layer of the text view, the highlight's too
         insertSubview(behind, at: 0)
         addInteraction(menuInteraction)
+        addGestureRecognizer(FingerFollower { [weak self] in self?.follow($0) })
         registerForTraitChanges([UITraitPreferredContentSizeCategory.self, UITraitUserInterfaceStyle.self]) { (v: LiftUITextView, _) in
             v.render(width: v.laidOut)
         }
@@ -311,12 +363,80 @@ final class LiftUITextView: UITextView, UITextViewDelegate, UIEditMenuInteractio
     }
 
     func textViewDidChangeSelection(_ textView: UITextView) {
+        if let touched, dragging == nil, selectedRange.length > 0, selectedRange != touched {
+            dragging = selectedRange.location != touched.location ? .start : .end
+        }
         if selectedRange.length > 0 {
             picked = true
         } else if picked {
             picked = false
             ended()
         }
+    }
+
+    // MARK: Scrolling on at an edge (#3188)
+
+    // A text view that scrolls itself scrolls on while a selection handle is held at its edge. This one does not (the
+    // lifted message around it does, `MessageLiftLayer`), and UIKit leaves that scroll view alone: so it is scrolled
+    // here, and the dragged end of the selection follows the words under the finger as they move.
+
+    private func follow(_ at: CGPoint?) {
+        if finger == nil { touched = selectedRange }
+        finger = at
+        if at == nil {
+            touched = nil
+            dragging = nil
+        }
+        if edgeSpeed() == 0 {
+            edgeLink?.invalidate()
+            edgeLink = nil
+        } else if edgeLink == nil {
+            let link = CADisplayLink(target: self, selector: #selector(edgeTick(_:)))
+            link.add(to: .main, forMode: .common)
+            edgeLink = link
+        }
+    }
+
+    /// The lifted message's scroll view, the first one around this view, when it has more than it shows.
+    private var scroller: UIScrollView? {
+        var v = superview
+        while let view = v, !(view is UIScrollView) { v = view.superview }
+        guard let s = v as? UIScrollView, s.isScrollEnabled, s.contentSize.height > s.bounds.height + 1 else { return nil }
+        return s
+    }
+
+    /// Points a second the message scrolls on, for a handle held where the finger is (`LiftLayout.edgeScroll`).
+    private func edgeSpeed() -> CGFloat {
+        guard dragging != nil, let finger, let s = scroller else { return 0 }
+        return LiftLayout.edgeScroll(at: s.convert(finger, from: nil).y - s.bounds.minY, height: s.bounds.height,
+                                     band: Theme.Lift.edgeScroll, speed: Theme.Lift.edgeScrollSpeed)
+    }
+
+    @objc private func edgeTick(_ link: CADisplayLink) {
+        let speed = edgeSpeed()
+        guard speed != 0, let s = scroller, let finger else { return follow(finger) }
+        let inset = s.adjustedContentInset
+        let lowest = -inset.top, highest = max(lowest, s.contentSize.height + inset.bottom - s.bounds.height)
+        let y = min(max(s.contentOffset.y + speed * (link.targetTimestamp - link.timestamp), lowest), highest)
+        guard y != s.contentOffset.y else { return }
+        s.contentOffset.y = y
+        extendSelection(to: finger)
+    }
+
+    /// The dragged end of the selection to the words under the finger; the ends never cross.
+    private func extendSelection(to finger: CGPoint) {
+        guard let dragging, let r = selectedTextRange, let at = closestPosition(to: convert(finger, from: nil)) else { return }
+        let next: UITextRange? = switch dragging {
+        case .start: compare(at, to: r.end) == .orderedAscending ? textRange(from: at, to: r.end) : nil
+        case .end: compare(at, to: r.start) == .orderedDescending ? textRange(from: r.start, to: at) : nil
+        }
+        guard let next, compare(next.start, to: r.start) != .orderedSame || compare(next.end, to: r.end) != .orderedSame else { return }
+        selectedTextRange = next
+    }
+
+    override func willMove(toWindow newWindow: UIWindow?) {
+        super.willMove(toWindow: newWindow)
+        if newWindow == nil { follow(nil) }
     }
 
     func textView(_ textView: UITextView, editMenuForTextIn range: NSRange, suggestedActions: [UIMenuElement]) -> UIMenu? {

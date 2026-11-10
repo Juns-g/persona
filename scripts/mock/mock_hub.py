@@ -8111,9 +8111,13 @@ def subagent_step():
 
 
 # MOCK_MESSAGE_LIFT=1: chats for the lifted message of a long press (#603): short messages, the newest one just above the
-# composer, and a long answer with a heading, a list, a code block and a table, taller than any screen. Synthetic text.
+# composer, and a long answer with a heading, a list, a code block and a table, taller than any screen, in an Agents chat
+# and in a Persona conversation (#3188: the lifted copy scrolls to its first line); in another Persona conversation, an
+# answer a little shorter than a small phone's screen, which lifts whole, under where Persona's top bar floats. Synthetic text.
 LIFT_SHORT = "a1f3c2d4-0000-4000-8000-0000000c1e08"
 LIFT_LONG = "a1f3c2d4-0000-4000-8000-0000000c1e09"
+LIFT_ASK = "b2e4d6f8-0000-4000-8000-0000000c1e09"
+LIFT_ASK_MID = "b2e4d6f8-0000-4000-8000-0000000c1e0a"
 
 
 def mock_message_lift():
@@ -8147,6 +8151,19 @@ def mock_message_lift():
                         it("assistant", "text", 5, text=long)]
     SESSIONS.append(sess("macbook", LIFT_SHORT, "登录页文案", "/Users/me/code/shop-app", "done", "done", "shop-app", 17, "lift", 1, 2, "收到，都提交了。"))
     SESSIONS.append(sess("macbook", LIFT_LONG, "改动整理", "/Users/me/code/shop-app", "done", "done", "shop-app", 17, "lift", 2, 5, "有问题的话告诉我具体哪一页。"))
+    ITEMS[LIFT_ASK] = [it("user", "text", 15, text="把这次登录和注册页的改动整理一下，带上测试结果"),
+                       it("assistant", "text", 5, text=long)]
+    ASSISTANT.append(assistant_sess(LIFT_ASK, "改动整理", 5, "有问题的话告诉我具体哪一页。"))
+    mid = ("## 接手前要知道的\n\n"
+           "这个仓库分成三块：服务端、网页端和手机端，各自有自己的测试脚本，改哪块就跑哪块的测试，跑完再提交。\n\n"
+           "服务端的配置都在一个文件里，本地开发用示例配置就能起来，不需要连真实的数据库，测试会自己起一个临时的。\n\n"
+           "网页端改样式之前先看设计规范，颜色、间距和字号都有现成的变量，不要在页面里直接写数字。\n\n"
+           "手机端的截图测试比较慢，一次大概要十分钟，可以先只跑你改到的那几页，合并之前再跑一遍完整的。\n\n"
+           "提交说明用英文写，一个改动一个提交，标题说清楚改了什么，正文写为什么这么改。\n\n"
+           "要我先带你看哪一块？")
+    ITEMS[LIFT_ASK_MID] = [it("user", "text", 12, text="我刚接手这个仓库，有什么要先知道的"),
+                           it("assistant", "text", 4, text=mid)]
+    ASSISTANT.append(assistant_sess(LIFT_ASK_MID, "接手须知", 4, "要我先带你看哪一块？"))
 
 
 if os.environ.get("MOCK_MESSAGE_LIFT") == "1":

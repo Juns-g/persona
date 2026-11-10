@@ -59,4 +59,20 @@ struct MessageLiftTests {
         let q = place(CGRect(x: 16, y: 300, width: 80, height: 40), trailing: true)
         #expect(q.bar.minX >= bounds.minX + 8)
     }
+
+    /// A selection handle held near a long lifted message's top or bottom edge scrolls it on that way (#3188).
+    @Test func aHandleHeldAtAnEdgeScrollsThatWayFasterTheCloserItIs() {
+        func speed(_ y: CGFloat, _ height: CGFloat = 600) -> CGFloat {
+            LiftLayout.edgeScroll(at: y, height: height, band: 44, speed: 900)
+        }
+        #expect(speed(300) == 0, "in the middle it stays")
+        #expect(speed(44) == 0 && speed(556) == 0, "just outside the bands")
+        #expect(speed(22) == -450 && speed(578) == 450, "halfway into a band: half speed, up or down")
+        #expect(speed(0) == -900 && speed(-80) == -900, "at the edge and past it: full speed")
+        #expect(speed(600) == 900 && speed(700) == 900)
+        // A short part: its bands are a third of it each, with the middle still at rest.
+        #expect(speed(30, 90) == 0)
+        #expect(speed(0, 90) == -900)
+        #expect(speed(10, 0) == 0, "nothing shown, nothing to scroll")
+    }
 }

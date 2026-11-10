@@ -79,21 +79,47 @@ nonisolated enum LiftLayout {
         let barY = below ? preview.maxY + gap : preview.minY - gap - bar.height
         return Placement(preview: preview, offset: offset, bar: CGRect(x: barX, y: barY, width: bar.width, height: bar.height), below: below)
     }
+
+    /// A selection handle held at y in a lifted message's shown part, `height` tall: how fast that part scrolls on, in
+    /// points a second (up below zero). Nothing outside the bands at its ends, `band` tall (less in a short part, a third
+    /// of it at most); in one, faster the deeper the handle is, `speed` at the edge and past it.
+    static func edgeScroll(at y: CGFloat, height: CGFloat, band: CGFloat, speed: CGFloat) -> CGFloat {
+        let band = min(band, height / 3)
+        guard band > 0 else { return 0 }
+        if y < band { return -speed * min((band - y) / band, 1) }
+        if y > height - band { return speed * min((y - (height - band)) / band, 1) }
+        return 0
+    }
 }
 
 extension View {
     /// The chat page under `MessageLiftLayer`: blurred a little while a message is lifted over it. The radius goes to
     /// zero rather than the modifier away, so the page keeps its identity (and its scroll position).
-    func liftBlur(_ menu: MessageMenu) -> some View { modifier(LiftBlur(menu: menu)) }
+    func liftBlur(_ menu: MessageMenu?) -> some View { modifier(LiftBlur(menu: menu)) }
 }
 
 private struct LiftBlur: ViewModifier {
-    var menu: MessageMenu
+    var menu: MessageMenu?
 
     func body(content: Content) -> some View {
         // Not opaque: the page's background is behind this view, not in it, and an opaque blur fills what is clear with black.
-        content.blur(radius: menu.lift == nil ? 0 : Theme.Lift.blur)
+        content.blur(radius: menu?.lift == nil ? 0 : Theme.Lift.blur)
     }
+}
+
+/// A page that floats a bar over the chat in it (Persona's conversation: its top bar and the switcher under it) draws
+/// that chat's lifted message itself, over the bar, so the whole page dims as an Agents chat does. Drawn inside the
+/// chat, a long message ran under the bar, its first lines out of reach (#3188). The chat hands its menu here
+/// (`ChatView`); the lifted copy brings what it needs from where it was pressed (`MessageLongPress`).
+@Observable
+final class MessageLiftHost {
+    /// The menu of the chat on the page.
+    var menu: MessageMenu?
+}
+
+extension EnvironmentValues {
+    /// Set by such a page for its chat (and nothing inside that chat).
+    @Entry var messageLiftHost: MessageLiftHost? = nil
 }
 
 /// The dimmed chat, the lifted message and its bar, over the whole chat page while a message is pressed.
@@ -219,7 +245,9 @@ private struct LiftedMessage: View {
         .clipShape(lift.card ? AnyShape(shape) : AnyShape(Rectangle()))
         .overlay { if lift.card { shape.stroke(Theme.cardStroke, lineWidth: 0.5) } }
         .shadow(color: Theme.Fill.scrim, radius: Theme.Space.l, y: Theme.Space.xs)
-        .accessibilityElement(children: selecting ? .contain : .combine)
+        // One element when it all shows; a long one keeps its parts, for VoiceOver to go through them and scroll it there.
+        .accessibilityElement(children: selecting || cut ? .contain : .combine)
+        .accessibilityIdentifier("message-lift")
     }
 
     /// Opaque, fading over the fade's width at an end with more of the message beyond it.

@@ -286,6 +286,7 @@ private struct MessageLongPress<P: View>: ViewModifier {
     @Environment(\.openFile) private var openFile
     @Environment(\.loadImage) private var loadImage
     @Environment(\.rowMemoScope) private var memoScope
+    @Environment(\.assistantCardConversation) private var conversation
     let id: String
     let card: Bool
     let preview: () -> P
@@ -318,6 +319,8 @@ private struct MessageLongPress<P: View>: ViewModifier {
             .environment(\.openFile, openFile)
             .environment(\.loadImage, loadImage)
             .environment(\.rowMemoScope, memoScope)
+            // Drawn over the page around the chat in Persona's conversation (`MessageLiftHost`), outside the chat's own.
+            .environment(\.assistantCardConversation, conversation)
             .environment(\.chatPin, nil) // what opens in the copy does not move the chat under it
         withAnimation(Theme.Motion.state) {
             menu.selected = id
