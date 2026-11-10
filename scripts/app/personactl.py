@@ -161,7 +161,8 @@ class Ctl:
 
     def launch(self, hub=None, extra=(), wait=20, pair="mock"):
         """Terminates the app and launches it with a fresh token (paired with `hub` when given, with the hub token `pair`:
-        scripts/mock/mock_hub.py playing a sync case takes `mock-<device>` as that device); waits for `ping`."""
+        scripts/mock/mock_hub.py playing a sync case takes `mock-<device>` as that device; "" keeps the pairing the app
+        has, as a relaunch does); waits for `ping`."""
         if self.via_hub:
             raise CtlError("launch drives the simulator only: on a real phone install the DEBUG build with Xcode or "
                            "devicectl and open it yourself (launch arguments: -runtimeCLIHub YES)")
@@ -169,7 +170,7 @@ class Ctl:
         self.token = secrets.token_hex(16)
         sh("xcrun", "simctl", "terminate", self.udid, self.bundle, check=False)
         args = ["-runtimeCLI", str(self.port), "-runtimeCLIToken", self.token]
-        if self.hub:
+        if self.hub and pair:
             args += ["-pairURL", "persona://pair?url=" + urllib.parse.quote(self.hub, safe="") + "&token=" + urllib.parse.quote(pair, safe="")]
         sh("xcrun", "simctl", "launch", self.udid, self.bundle, *args, *extra)
         self._save()
