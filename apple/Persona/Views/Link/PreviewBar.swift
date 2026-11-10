@@ -345,7 +345,8 @@ struct PreviewPage: View {
         Task {
             defer { shooting = false }
             do {
-                let image = whole ? try await PageShot.whole(v) : try await PageShot.visible(v)
+                let image: UIImage
+                if whole { image = try await PageShot.whole(v) } else { image = try await PageShot.visible(v) }
                 model.composerInbox[key, default: []].append(image)
                 Haptics.success()
                 model.toast = Toast(String(localized: "Screenshot added to your message"), style: .success)

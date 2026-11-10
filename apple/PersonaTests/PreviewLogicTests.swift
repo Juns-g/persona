@@ -201,8 +201,10 @@ struct PreviewModelTests {
         let hub = FakeHub()
         hub.on("GET", "/api/v1/machines/mac/preview/servers", json: Self.servers)
         hub.on("POST", "/api/v1/machines/mac/preview/start", json: #"{"port":8080}"#)
-        var m: PreviewModel!
-        m = model(hub) { _ in m.cancelStart() }
+        final class Box { var model: PreviewModel? }
+        let box = Box()
+        let m = model(hub) { _ in box.model?.cancelStart() }
+        box.model = m
         await m.load()
         let api = try #require(m.options(ports: []).first { $0.name == "api" })
         #expect(await m.start(api, workspace: "w1", kind: "herdr") { [] } == .stopped)

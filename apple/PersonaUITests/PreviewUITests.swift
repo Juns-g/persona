@@ -20,13 +20,8 @@ final class PreviewUITests: XCTestCase {
     }
 
     private func mock(_ query: String) throws -> [String: Any] {
-        var req = URLRequest(url: URL(string: hub + "/mock/preview" + query)!)
-        req.setValue("Bearer mock", forHTTPHeaderField: "Authorization")
-        var out: Data?
-        let done = expectation(description: "mock")
-        URLSession.shared.dataTask(with: req) { data, _, _ in out = data; done.fulfill() }.resume()
-        wait(for: [done], timeout: 10)
-        return try JSONSerialization.jsonObject(with: try XCTUnwrap(out)) as? [String: Any] ?? [:]
+        let data = try Data(contentsOf: URL(string: hub + "/mock/preview" + query)!)
+        return try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
     }
 
     @MainActor private func shot(_ app: XCUIApplication, _ name: String) {
