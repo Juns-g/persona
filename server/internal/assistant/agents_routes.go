@@ -35,6 +35,7 @@ func (s *Service) agentRoutes() {
 		var request struct {
 			TriageSwitches
 			ToolLoop *bool `json:"tool_loop"`
+			Closeout *bool `json:"closeout"`
 		}
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&request); err != nil {
 			apierr.Write(w, http.StatusBadRequest, err)
@@ -48,8 +49,15 @@ func (s *Service) agentRoutes() {
 		if request.ToolLoop != nil {
 			in.ToolLoop = *request.ToolLoop
 		}
+		in.Closeout = prev.Closeout // an app that does not know it leaves it as it was
+		if request.Closeout != nil {
+			in.Closeout = *request.Closeout
+		}
 		if in.ReplyReminder == nil {
 			in.ReplyReminder = prev.ReplyReminder
+		}
+		if in.TransientRetry == nil {
+			in.TransientRetry = prev.TransientRetry // an app that does not know it (#3208) leaves it as it was
 		}
 		switch {
 		case in.ReplyReminderMinutes == 0:
@@ -98,7 +106,7 @@ type workStats struct {
 	Hours    int            `json:"hours"`
 	Triaged  map[string]int `json:"triaged"` // "done", "blocked/user", … "unsure", "failed"
 	By       map[string]int `json:"by"`      // rule, model
-	Actions  map[string]int `json:"actions"` // continued, woke, asked, answered, withdrawn
+	Actions  map[string]int `json:"actions"` // continued, woke, asked, answered, withdrawn, auto_approved
 	Resumed  map[string]int `json:"resumed"` // by user / hub after a triaged turn
 	Unread   sampleStats    `json:"unread"`  // "Unread" over the hours
 	NeedsYou sampleStats    `json:"needs_you"`
@@ -141,7 +149,7 @@ func summarizeWork(hours int, events []db.WorkEvent) workStats {
 			s.By[str("by")]++
 		case "failed":
 			s.Triaged["failed"]++
-		case "continued", "limit_continued", "woke", "asked", "answered", "withdrawn":
+		case "continued", "limit_continued", "woke", "asked", "answered", "withdrawn", "auto_approved":
 			s.Actions[e.Kind]++
 		case "resumed", "seen":
 			if e.Kind == "resumed" {
