@@ -240,21 +240,16 @@ import SwiftUI
     /// clipboard did not take it.
     @discardableResult func paste(_ text: String) async -> Bool { await input.paste(text).value }
 
-    /// Onto the Mac's clipboard: Latin-1 through RFB (sent, with no receipt: true means only that it went out in
-    /// order); anything else through its node. False when it could not be: no connection, no hub, or the node failed.
+    /// Onto the Mac's clipboard, there by the time this says true (#3075): through its node (pbcopy, which answers once
+    /// the text is on the clipboard). RFB's own clipboard (ClientCutText) only when the node cannot (one too old for it):
+    /// it carries Latin-1 alone and says nothing back, and macOS's Screen Sharing hands it to the clipboard on its own
+    /// time, so a ⌘V right after it could paste what was there before. False when neither could: no connection, no hub,
+    /// or the node failed for text outside Latin-1.
     func setMacClipboard(_ text: String) async -> Bool {
-        if text.unicodeScalars.allSatisfy({ $0.value < 256 }) {
-            guard let client else { return false }
-            client.cutText(text)
-            return true
-        }
-        guard let api = AppModel.shared.api(ref.group) else { return false }
-        do {
-            try await api.setComputerClipboard(machine: ref.id, text)
-            return true
-        } catch {
-            return false
-        }
+        if let api = AppModel.shared.api(ref.group), (try? await api.setComputerClipboard(machine: ref.id, text)) != nil { return true }
+        guard text.unicodeScalars.allSatisfy({ $0.value < 256 }), let client else { return false }
+        client.cutText(text)
+        return true
     }
 
     /// The Mac's clipboard now: through its node, else what it last sent.

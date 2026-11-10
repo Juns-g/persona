@@ -37,21 +37,32 @@ struct VNCPage: View {
     private var name: String { model.machine(ref)?.name ?? ref.id }
     /// The agent that opened it waits on the user: there is something to hand back.
     private var waiting: Bool { from.flatMap { model.session($0) }?.state == .needsYou }
+    #if os(iOS) || os(visionOS)
+    @Environment(\.verticalSizeClass) private var verticalSize
+    /// An iPhone on its side (#3075): the bars become rails down either side, so the Mac's picture gets the whole height.
+    private var railed: Bool { verticalSize == .compact }
+    #else
+    private let railed = false
+    #endif
 
     var body: some View {
-        VStack(spacing: 0) {
+        // One layout either way round: the picture (and the keyboard's catcher) stay the same views as the phone turns.
+        let layout = railed ? AnyLayout(HStackLayout(spacing: 0)) : AnyLayout(VStackLayout(spacing: 0))
+        layout {
             topBar
-            TimelineView(.periodic(from: .now, by: 1)) { ctx in
-                if let a = model.computerActivities[ref], a.shown(at: ctx.date) { stepLine(a) }
+            VStack(spacing: 0) {
+                TimelineView(.periodic(from: .now, by: 1)) { ctx in
+                    if let a = model.computerActivities[ref], a.shown(at: ctx.date) { stepLine(a) }
+                }
+                ZStack {
+                    Color.black
+                    if let s = session { content(s) }
+                }
+                #if os(iOS) || os(visionOS)
+                // Over the keyboard while it is up (the bars ride above it).
+                if typing, let s = session { VNCShortcutBar(session: s, modifiers: modifiers) }
+                #endif
             }
-            ZStack {
-                Color.black
-                if let s = session { content(s) }
-            }
-            #if os(iOS) || os(visionOS)
-            // Over the keyboard while it is up (the bars ride above it).
-            if typing, let s = session { VNCShortcutBar(session: s, modifiers: modifiers) }
-            #endif
             bottomBar
         }
         .background(Color.black.ignoresSafeArea())
@@ -124,20 +135,55 @@ struct VNCPage: View {
 
     // MARK: Bars
 
+    /// A bar of buttons: a row across the page, or on an iPhone on its side a rail down it, closer together when it does
+    /// not fit (the keyboard up), and scrolling when even that does not (the largest text sizes).
+    @ViewBuilder private func bar<Content: View>(spacing: CGFloat, @ViewBuilder _ content: () -> Content) -> some View {
+        if railed {
+            let tight = VStack(spacing: Theme.Space.xxs) { content() }.padding(.horizontal, Theme.Space.s).padding(.vertical, Theme.Space.xxs)
+            ViewThatFits(in: .vertical) {
+                VStack(spacing: spacing) { content() }.padding(Theme.Space.s)
+                tight
+                ScrollView(.vertical) { tight }.scrollIndicators(.hidden)
+            }
+        } else {
+            HStack(spacing: spacing) { content() }
+                .padding(.horizontal, Theme.Space.page)
+                .padding(.vertical, Theme.Space.s)
+        }
+    }
+
     private var topBar: some View {
-        HStack(spacing: Theme.Space.s) {
+        bar(spacing: Theme.Space.s) {
             Button { close() } label: { barIcon(Theme.Icon.close) }
             .themedButton()
             .accessibilityLabel("Close Screen")
             .accessibilityIdentifier("screen-close")
-            Spacer(minLength: Theme.Space.s)
-            HStack(spacing: Theme.Space.xs) {
-                Circle().fill(dot).scaledFrame(width: Theme.Size.dot, height: Theme.Size.dot)
-                Text(name).font(Theme.Font.bodyStrong).lineLimit(1)
-                Text(phaseLabel).font(Theme.Font.label).foregroundStyle(.secondary).lineLimit(1)
+            #if os(iOS)
+            // Right of Close (#3075): the small window a tap away, not inside ⋯.
+            if VNCPiP.supported {
+                Button { toPictureInPicture() } label: { barIcon(Theme.Icon.pictureInPicture) }
+                    .themedButton()
+                    .accessibilityLabel("Picture in Picture")
+                    .accessibilityIdentifier("vnc-pip")
             }
-            .accessibilityElement(children: .combine)
-            .accessibilityIdentifier("screen-phase")
+            #endif
+            Spacer(minLength: Theme.Space.s)
+            if railed {
+                // No room for the name down a rail: the dot, with the name and the phase for VoiceOver.
+                Circle().fill(dot).scaledFrame(width: Theme.Size.dot, height: Theme.Size.dot)
+                    .accessibilityElement()
+                    .accessibilityLabel(name)
+                    .accessibilityValue(phaseLabel)
+                    .accessibilityIdentifier("screen-phase")
+            } else {
+                HStack(spacing: Theme.Space.xs) {
+                    Circle().fill(dot).scaledFrame(width: Theme.Size.dot, height: Theme.Size.dot)
+                    Text(name).font(Theme.Font.bodyStrong).lineLimit(1)
+                    Text(phaseLabel).font(Theme.Font.label).foregroundStyle(.secondary).lineLimit(1)
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityIdentifier("screen-phase")
+            }
             Spacer(minLength: Theme.Space.s)
             Button { help = true } label: { barIcon(Theme.Icon.help) }
                 .themedButton()
@@ -145,8 +191,6 @@ struct VNCPage: View {
                 .accessibilityIdentifier("vnc-help")
             moreMenu
         }
-        .padding(.horizontal, Theme.Space.page)
-        .padding(.vertical, Theme.Space.s)
     }
 
     /// A top-bar button's glyph in one square for every button: a themed button is sized by its label, and glyphs differ
@@ -178,7 +222,10 @@ struct VNCPage: View {
             }
             #endif
             Button { centerPointer() } label: { Label("Center Pointer", systemImage: Theme.Icon.pointerCenter) }
-            #if os(iOS) || os(visionOS)
+            #if os(iOS)
+            // Picture in Picture itself is the button right of Close.
+            Button { pipLog = true } label: { Label("Picture in Picture Diagnostics", systemImage: Theme.Icon.help) }
+            #elseif os(visionOS)
             if VNCPiP.supported {
                 Button { toPictureInPicture() } label: { Label("Picture in Picture", systemImage: Theme.Icon.pictureInPicture) }
             }
@@ -198,7 +245,7 @@ struct VNCPage: View {
     }
 
     private var bottomBar: some View {
-        HStack(spacing: Theme.Space.m) {
+        bar(spacing: Theme.Space.m) {
             Menu {
                 Button { Task { await pasteFromPhone(andPaste: true) } } label: { Label(Self.fromPhone, systemImage: Theme.Icon.paste) }
                 Button { Task { await pasteFromPhone(andPaste: false) } } label: { Label("Copy to Mac's Clipboard Only", systemImage: Theme.Icon.clipboard) }
@@ -212,7 +259,12 @@ struct VNCPage: View {
             Spacer(minLength: Theme.Space.s)
             if waiting {
                 Button { handBack() } label: {
-                    Label("I'm Done", systemImage: Theme.Icon.handBack).font(Theme.Font.labelStrong).lineLimit(1)
+                    if railed {
+                        Label("I'm Done", systemImage: Theme.Icon.handBack).labelStyle(.iconOnly).font(Theme.Font.heading)
+                            .scaledFrame(width: Theme.Size.icon, height: Theme.Size.icon)
+                    } else {
+                        Label("I'm Done", systemImage: Theme.Icon.handBack).font(Theme.Font.labelStrong).lineLimit(1)
+                    }
                 }
                 .themedButton(prominent: true)
                 .accessibilityIdentifier("vnc-done")
@@ -227,8 +279,6 @@ struct VNCPage: View {
             .accessibilityIdentifier("vnc-keyboard")
             #endif
         }
-        .padding(.horizontal, Theme.Space.page)
-        .padding(.vertical, Theme.Space.s)
         #if os(iOS) || os(visionOS)
         .background { if let s = session { VNCKeyCatcher(session: s, modifiers: modifiers, typing: $typing).frame(width: Theme.Size.hairline, height: Theme.Size.hairline) } }
         #endif
@@ -259,8 +309,17 @@ struct VNCPage: View {
             VNCScreen(session: s, mode: mode, interactive: true)
             #endif
         case .signIn(let failed):
-            VNCSignIn(name: name, account: Self.account(model.machine(ref)?.home), failed: failed) { account, password, remember in
+            let form = VNCSignIn(name: name, account: Self.account(model.machine(ref)?.home), failed: failed) { account, password, remember in
                 s.signIn(account: account, password: password, remember: remember)
+            }
+            if railed {
+                // On its side the form is taller than the page (more so with the keyboard up for the password): it scrolls.
+                GeometryReader { g in
+                    ScrollView { form.frame(maxWidth: .infinity, minHeight: g.size.height) }
+                        .scrollBounceBehavior(.basedOnSize)
+                }
+            } else {
+                form
             }
         case .connecting:
             VStack(spacing: Theme.Space.s) {
@@ -344,6 +403,12 @@ struct VNCPage: View {
     private func pasteFromPhone(andPaste: Bool) async {
         #if os(iOS) || os(visionOS)
         let text = UIPasteboard.general.string
+        // Text there that iOS would not hand over (Allow Paste not tapped, or not allowed in Settings): say so, not
+        // that there is none (#3075).
+        if text == nil, UIPasteboard.general.hasStrings {
+            model.toast = Toast(String(localized: "Couldn't read this iPhone's clipboard: tap Allow Paste when asked, or allow Paste from Other Apps for this app in Settings"), style: .error)
+            return
+        }
         #else
         let text = NSPasteboard.general.string(forType: .string)
         #endif
@@ -471,7 +536,11 @@ struct VNCHelp: View {
                 }
                 #endif
                 Section("Picture in Picture") {
+                    #if os(iOS)
+                    row(Theme.Icon.pictureInPicture, String(localized: "Picture in Picture"), String(localized: "The Picture in Picture button next to Close floats the screen over other apps and the Home Screen; tap it to come back here. Picture in Picture is view-only, and closing it disconnects."))
+                    #else
                     row(Theme.Icon.pictureInPicture, String(localized: "Picture in Picture"), String(localized: "“Picture in Picture” in “…” floats the screen over other apps and the Home Screen; tap it to come back here. Picture in Picture is view-only, and closing it disconnects."))
+                    #endif
                 }
                 Section("Handing Back the Computer") {
                     row(Theme.Icon.handBack, String(localized: "I'm Done"), String(localized: "When an agent is waiting for you to do something on the computer, tap “I'm Done” in the bottom bar when you're finished and it carries on. Closing the screen also hands it back."))

@@ -1,3 +1,4 @@
+import UIKit
 import XCTest
 
 /// The app's own VNC (#1343) against scripts/mock/mock_hub.py with MOCK_COMPUTER=ready MOCK_SCREEN=fake (its Screen
@@ -85,9 +86,8 @@ final class VNCTests: XCTestCase {
         rest(2)
         shot(app, "vnc-page")
 
-        // Picture in Picture again from the page's …
-        app.buttons["vnc-more"].tap()
-        app.buttons["小窗"].firstMatch.tap()
+        // Picture in Picture again from the page's button right of Close (#3075).
+        app.buttons["vnc-pip"].tap()
         XCTAssertTrue(on.waitForExistence(timeout: 20), "the small window again")
         rest(3)
     }
@@ -350,12 +350,230 @@ final class VNCTests: XCTestCase {
         print("VNC-MEASURE " + samples.joined(separator: " | "))
     }
 
+    // MARK: #3075
+
+    /// Picture in Picture is a button of its own right of Close, as round as it, and no longer inside ⋯. The simulators
+    /// have no picture in picture: DEBUG -showPiPSource YES offers it, and a tap asks for it (Picture in Picture
+    /// Diagnostics says so).
+    @MainActor func testPictureInPictureIsRightOfClose() throws {
+        let (app, _) = try signedInMachinePage(["-showPiPSource", "YES"])
+        let close = app.buttons["screen-close"].firstMatch, pip = app.buttons["vnc-pip"].firstMatch
+        XCTAssertTrue(pip.waitForExistence(timeout: 10), "no Picture in Picture button:\n\(app.debugDescription)")
+        let c = close.frame, p = pip.frame
+        XCTAssertGreaterThanOrEqual(p.minX, c.maxX, "right of Close: \(p) vs \(c)")
+        XCTAssertLessThanOrEqual(p.minX - c.maxX, 12, "next to Close: \(p) vs \(c)")
+        XCTAssertEqual(p.midY, c.midY, accuracy: 1, "on Close's line")
+        XCTAssertEqual(p.width, c.width, accuracy: 1)
+        XCTAssertEqual(p.height, c.height, accuracy: 1)
+        XCTAssertEqual(pip.label, "小窗")
+        rest()
+        shot(app, "vnc-pip-button")
+
+        app.buttons["vnc-more"].tap()
+        XCTAssertTrue(app.buttons["小窗诊断"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons.matching(NSPredicate(format: "label == '小窗' AND identifier != 'vnc-pip'")).firstMatch.exists,
+                       "not inside ⋯ too:\n\(app.debugDescription)")
+        app.buttons["小窗诊断"].tap()
+        let diagnostics = app.descendants(matching: .any)["vnc-pip-diagnostics"].firstMatch
+        XCTAssertTrue(diagnostics.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "要小窗")).firstMatch.exists, "not asked yet")
+        app.buttons["关闭"].firstMatch.tap()
+        XCTAssertTrue(pip.waitForExistence(timeout: 5))
+        pip.tap()
+        rest()
+        app.buttons["vnc-more"].tap()
+        app.buttons["小窗诊断"].tap()
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "要小窗")).firstMatch.waitForExistence(timeout: 5),
+                      "the tap asked for the small window:\n\(app.debugDescription)")
+        app.buttons["关闭"].firstMatch.tap()
+    }
+
+    /// On its side (#3075): the page turns to either landscape, the picture takes the height between two rails of buttons
+    /// inside the safe area (Close then Picture in Picture down the leading one), and a tap lands on the Mac where the
+    /// finger is. Upright again and closed, the app stays upright when the phone turns.
+    @MainActor func testLandscape() throws {
+        let app = try launch(["-tab", "settings", "-openMachines", "YES", "-openMachineDetail", "macbook", "-openScreenFresh", "YES", "-showPiPSource", "YES"])
+        defer { XCUIDevice.shared.orientation = .portrait }
+        let vnc = app.buttons["computer-screen"].firstMatch
+        XCTAssertTrue(vnc.waitForExistence(timeout: 30), "no VNC:\n\(app.debugDescription)")
+        for _ in 0..<6 where !vnc.isHittable { app.swipeUp() }
+        vnc.tap()
+        let password = app.secureTextFields["vnc-password"].firstMatch
+        XCTAssertTrue(password.waitForExistence(timeout: 30), "the sign-in:\n\(app.debugDescription)")
+        let window = app.windows.firstMatch
+        let wide = NSPredicate { _, _ in window.frame.width > window.frame.height }
+        let tall = NSPredicate { _, _ in window.frame.width < window.frame.height }
+
+        // Signed in on its side: the form scrolls between the rails, over the keyboard too.
+        XCUIDevice.shared.orientation = .landscapeLeft
+        XCTAssertEqual(XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: wide, object: nil)], timeout: 10), .completed,
+                       "the page did not turn: \(window.frame)")
+        rest(2)
+        shot(app, "vnc-landscape-signin"); hold("vnc-landscape-signin")
+        password.tap()
+        password.typeText("mock-pass")
+        rest()
+        shot(app, "vnc-landscape-signin-keyboard"); hold("vnc-landscape-signin-keyboard")
+        let connect = app.buttons["vnc-connect"].firstMatch
+        if !connect.isHittable { app.scrollViews.firstMatch.swipeUp() }
+        connect.tap()
+        XCTAssertTrue(live(app), "signed in on its side:\n\(app.debugDescription)")
+        if app.keyboards.firstMatch.exists { app.buttons["vnc-keyboard"].tap(); app.buttons["vnc-keyboard"].tap() }
+
+        let screen = app.descendants(matching: .any)["vnc-screen"].firstMatch
+        let close = app.buttons["screen-close"].firstMatch, pip = app.buttons["vnc-pip"].firstMatch
+        let keyboard = app.buttons["vnc-keyboard"].firstMatch, clipboard = app.buttons["vnc-clipboard"].firstMatch
+        XCTAssertTrue(screen.waitForExistence(timeout: 10))
+        XCUIDevice.shared.orientation = .portrait
+        XCTAssertEqual(XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: tall, object: nil)], timeout: 10), .completed)
+        rest(2)
+        let upright = screen.frame
+        shot(app, "vnc-portrait")
+        for (name, orientation) in [("left", UIDeviceOrientation.landscapeLeft), ("right", .landscapeRight)] {
+            XCUIDevice.shared.orientation = orientation
+            XCTAssertEqual(XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: wide, object: nil)], timeout: 10), .completed,
+                           "\(name): the page did not turn: \(window.frame)")
+            rest(2)
+            let w = window.frame, s = screen.frame
+            XCTAssertGreaterThan(s.width, s.height, "\(name): the picture lies wide: \(s)")
+            XCTAssertGreaterThan(s.height, w.height * 0.85, "\(name): the picture takes the height: \(s) in \(w)")
+            let picture = Self.fit(CGSize(width: 480, height: 300), in: s), uprightPicture = Self.fit(CGSize(width: 480, height: 300), in: upright)
+            XCTAssertGreaterThan(picture.width, uprightPicture.width * 1.4, "\(name): the picture larger than upright: \(picture) vs \(uprightPicture)")
+            // The rails: Close then Picture in Picture down the leading side, the clipboard and the keyboard down the
+            // trailing one, all beside the picture and on screen.
+            for b in [close, pip] {
+                XCTAssertLessThanOrEqual(b.frame.maxX, s.minX + 1, "\(name): \(b.identifier) left of the picture: \(b.frame) vs \(s)")
+            }
+            for b in [clipboard, keyboard] {
+                XCTAssertGreaterThanOrEqual(b.frame.minX, s.maxX - 1, "\(name): \(b.identifier) right of the picture: \(b.frame) vs \(s)")
+            }
+            for b in [close, pip, clipboard, keyboard] {
+                XCTAssertTrue(w.contains(b.frame) && b.isHittable, "\(name): \(b.identifier) on screen: \(b.frame) in \(w)")
+            }
+            XCTAssertGreaterThan(pip.frame.minY, close.frame.maxY - 1, "\(name): Picture in Picture under Close")
+            XCTAssertEqual(pip.frame.midX, close.frame.midX, accuracy: 1)
+            shot(app, "vnc-landscape-\(name)"); hold("vnc-landscape-\(name)")
+
+            // A tap a quarter of the way across and down the Mac's 480×300 lands at (120, 75).
+            try mock(hub!, "/mock/screen-password?clear=1")
+            let fitted = Self.fit(CGSize(width: 480, height: 300), in: s)
+            let at = CGPoint(x: fitted.minX + fitted.width / 4, y: fitted.minY + fitted.height / 4)
+            app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: at.x, dy: at.y)).tap()
+            rest()
+            let clicks = try mockState()["clicks"] as? [[String: Any]] ?? []
+            let down = try XCTUnwrap(clicks.first { $0["down"] as? Bool == true }, "\(name): no click: \(clicks)")
+            XCTAssertEqual(Double(down["x"] as? Int ?? -1), 120, accuracy: 3, "\(name): \(down)")
+            XCTAssertEqual(Double(down["y"] as? Int ?? -1), 75, accuracy: 3, "\(name): \(down)")
+
+            // The keyboard up: the rails still reach their buttons (they scroll when they do not fit).
+            keyboard.tap()
+            XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5), "\(name): the keyboard")
+            rest()
+            XCTAssertTrue(keyboard.isHittable && close.isHittable, "\(name): Keyboard and Close reachable over the keyboard")
+            shot(app, "vnc-landscape-\(name)-keyboard"); hold("vnc-landscape-\(name)-keyboard")
+            keyboard.tap()
+            XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 5))
+        }
+
+        // Closed on its side: the app is upright again at once, and stays so however the phone is held.
+        close.tap()
+        XCTAssertTrue(vnc.waitForExistence(timeout: 10))
+        XCTAssertEqual(XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: tall, object: nil)], timeout: 10), .completed,
+                       "upright again: \(window.frame)")
+        XCUIDevice.shared.orientation = .portrait
+        rest()
+        XCUIDevice.shared.orientation = .landscapeLeft
+        rest(2)
+        XCTAssertLessThan(window.frame.width, window.frame.height, "the app turned with the page closed: \(window.frame)")
+        shot(app, "vnc-closed-stays-upright")
+    }
+
+    /// The Mac's picture fitted in a view, as VNCScreenUIView fits it.
+    private static func fit(_ size: CGSize, in r: CGRect) -> CGRect {
+        let k = min(r.width / size.width, r.height / size.height)
+        let w = size.width * k, h = size.height * k
+        return CGRect(x: r.midX - w / 2, y: r.midY - h / 2, width: w, height: h)
+    }
+
+    /// Paste from iPhone (#3075): what the phone has, Chinese, emoji, a shell's special characters, tabs, several lines
+    /// and some kilobytes of it, goes onto the Mac's clipboard whole through its node, and ⌘V follows only once it is
+    /// there (the mock writes down the clipboard's writes and the keys in the order they came). The text reaches the
+    /// phone's clipboard by Copy to iPhone (the app's own, so iOS asks nothing); another app's text that iOS will not
+    /// hand over (the simulators refuse Allow Paste without showing it) says so, not that there is none.
+    @MainActor func testPasteFromIPhone() throws {
+        let (app, _) = try signedInMachinePage()
+        let line = "$HOME \"double\" 'single' \\ `tick` ! & | ; <> * ? ~\ttab 中文 😀👍🏽 — “quoted” …"
+        let texts = ["echo hello", (1...3).map { "line \($0): \(line)" }.joined(separator: "\n"),
+                     (1...120).map { String(format: "%04d %@", $0, line) }.joined(separator: "\n")]
+        for (i, text) in texts.enumerated() {
+            try mockPost("/api/v1/machines/macbook/computer/clipboard", ["text": text]) // the Mac copied it…
+            app.buttons["vnc-clipboard"].tap()
+            app.buttons["复制到 iPhone"].firstMatch.tap() // …and the phone has it
+            XCTAssertTrue(app.staticTexts["已复制 MacBook 的剪贴板"].waitForExistence(timeout: 10), "text \(i): on the phone")
+            try mock(hub!, "/mock/screen-password?clear=1")
+            rest()
+            app.buttons["vnc-clipboard"].tap()
+            app.buttons["从 iPhone 粘贴"].firstMatch.tap()
+            XCTAssertTrue(app.staticTexts["已粘贴到 MacBook"].waitForExistence(timeout: 10), "text \(i): the toast:\n\(app.debugDescription)")
+            let events = try mockState()["events"] as? [[String: Any]] ?? []
+            let writes = events.enumerated().filter { $0.element["clipboard"] != nil }
+            XCTAssertEqual(writes.count, 1, "text \(i): one write: \(writes.map(\.element))")
+            XCTAssertEqual(writes.first?.element["via"] as? String, "node", "text \(i): through the node, which answers once it is there")
+            XCTAssertEqual(writes.first?.element["clipboard"] as? String, text, "text \(i): whole (\(text.utf8.count) bytes)")
+            let cmd = events.firstIndex { $0["key"] as? Int == 0xffeb && $0["down"] as? Bool == true }
+            let v = events.firstIndex { $0["key"] as? Int == 0x76 && $0["down"] as? Bool == true }
+            XCTAssertNotNil(v, "text \(i): ⌘V")
+            if let w = writes.first?.offset, let v, let cmd { XCTAssertTrue(w < cmd && cmd < v, "text \(i): ⌘V after the write: \(events)") }
+            XCTAssertEqual(events.filter { $0["key"] as? Int == 0xffeb }.map { $0["down"] as? Bool }, [true, false], "text \(i): ⌘ down then up: \(events)")
+            rest()
+        }
+        shot(app, "vnc-pasted")
+
+        // Another app's text: pasted when Allow Paste is tapped; refused, it says why, and nothing goes to the Mac.
+        try mock(hub!, "/mock/screen-password?clear=1")
+        UIPasteboard.general.string = "copied in another app"
+        app.buttons["vnc-clipboard"].tap()
+        app.buttons["从 iPhone 粘贴"].firstMatch.tap()
+        let pasted = app.staticTexts["已粘贴到 MacBook"], refused = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "读不到这台 iPhone 的剪贴板")).firstMatch
+        let either = NSPredicate { _, _ in pasted.exists || refused.exists }
+        // The simulators refuse at once; a device asks first.
+        if XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: either, object: nil)], timeout: 2) != .completed { allowPaste(app) }
+        XCTAssertEqual(XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: either, object: nil)], timeout: 10), .completed,
+                       "pasted, or why not (never “no text”):\n\(app.debugDescription)")
+        let clipboard = try mockState()["clipboard"] as? String
+        XCTAssertEqual(clipboard, pasted.exists ? "copied in another app" : "", "the Mac's clipboard")
+        shot(app, "vnc-paste-refused")
+    }
+
+    /// The Mac's pointer reads over black, white, gray and a dark terminal (#3075), against the mock started with
+    /// MOCK_SCREEN_BG=black (TEST_RUNNER_PERSONA_SCREEN_BG=1): a 1920×1080 Mac sending no pointer, as macOS's does (the
+    /// app's own arrow, which was solid black); with MOCK_SCREEN_CURSOR=1 it sends macOS's arrow, which drawn at the
+    /// picture's scale was 4 points tall. Screenshots of each for the eye.
+    @MainActor func testThePointerReads() throws {
+        guard ProcessInfo.processInfo.environment["PERSONA_SCREEN_BG"] == "1" else {
+            throw XCTSkip("needs the mock with plain backgrounds: MOCK_SCREEN_BG=black (TEST_RUNNER_PERSONA_SCREEN_BG=1)")
+        }
+        let (app, _) = try signedInMachinePage()
+        let screen = app.descendants(matching: .any)["vnc-screen"].firstMatch
+        XCTAssertTrue(screen.waitForExistence(timeout: 10))
+        for bg in ["black", "white", "gray", "terminal"] {
+            try mock(hub!, "/mock/screen-password?bg=\(bg)")
+            rest(2)
+            shot(app, "vnc-pointer-\(bg)")
+            let value = screen.value as? String ?? ""
+            let size = value.split(separator: ";").first { $0.hasPrefix("pointer=") }?.dropFirst("pointer=".count).split(separator: "x").compactMap { Double($0) } ?? []
+            XCTAssertEqual(size.count, 2, value)
+            XCTAssertGreaterThanOrEqual(size.last ?? 0, 22, "\(bg): the pointer is drawn readable: \(value)")
+        }
+    }
+
     // MARK: Helpers
 
     @MainActor private func live(_ app: XCUIApplication) -> Bool {
         let phase = app.descendants(matching: .any)["screen-phase"].firstMatch
         let deadline = Date.now.addingTimeInterval(30)
-        while Date.now < deadline { if phase.exists, phase.label.contains("已连接") { return true }; usleep(250_000) }
+        // Down a rail (on its side) the phase is the dot's value.
+        while Date.now < deadline { if phase.exists, (phase.label + (phase.value as? String ?? "")).contains("已连接") { return true }; usleep(250_000) }
         return false
     }
 
@@ -376,6 +594,18 @@ final class VNCTests: XCTestCase {
         wait(for: [done], timeout: 10)
     }
 
+    /// POST JSON to the mock's API as the app would (its device token).
+    private func mockPost(_ path: String, _ body: [String: String]) throws {
+        var req = URLRequest(url: URL(string: hub! + path)!)
+        req.httpMethod = "POST"
+        req.setValue("Bearer \(UITestToken.device)", forHTTPHeaderField: "Authorization")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let done = expectation(description: path)
+        URLSession.shared.dataTask(with: req) { _, _, _ in done.fulfill() }.resume()
+        wait(for: [done], timeout: 10)
+    }
+
     private func mockState() throws -> [String: Any] {
         var out: [String: Any] = [:]
         let done = expectation(description: "state")
@@ -385,6 +615,17 @@ final class VNCTests: XCTestCase {
         }.resume()
         wait(for: [done], timeout: 10)
         return out
+    }
+
+    /// TEST_RUNNER_PERSONA_HOLD=<seconds>: stays this long on its side so the host can take `xcrun simctl io <udid>
+    /// screenshot` (XCUITest's own screenshot comes out scrambled in landscape); a file `hold-<name>` in PERSONA_SHOTS
+    /// says what to name it, and goes once taken.
+    private func hold(_ name: String) {
+        guard let seconds = ProcessInfo.processInfo.environment["PERSONA_HOLD"].flatMap(UInt32.init),
+              let dir = ProcessInfo.processInfo.environment["PERSONA_SHOTS"] else { return }
+        let look = ProcessInfo.processInfo.environment["PERSONA_LOOK"].map { "-" + $0 } ?? ""
+        FileManager.default.createFile(atPath: dir + "/hold-\(name)-\(UITestStyle.name)\(look)", contents: nil)
+        sleep(seconds)
     }
 
     @MainActor private func shot(_ app: XCUIApplication, _ name: String) {

@@ -2051,6 +2051,29 @@
     },
     "Automatic workout reports": {"extractionState": "manual", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Automatic workout reports"}}, "ja": {"stringUnit": {"state": "translated", "value": "ワークアウトレポートを自動生成"}}, "zh-Hans": {"stringUnit": {"state": "translated", "value": "运动后自动生成报告"}}}},
     "Workout report": {"extractionState": "manual", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Workout report"}}, "ja": {"stringUnit": {"state": "translated", "value": "ワークアウトレポート"}}, "zh-Hans": {"stringUnit": {"state": "translated", "value": "运动报告"}}}},
+    "Couldn't read this iPhone's clipboard: tap Allow Paste when asked, or allow Paste from Other Apps for this app in Settings" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Couldn't read this iPhone's clipboard: tap Allow Paste when asked, or allow Paste from Other Apps for this app in Settings"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "このiPhoneのクリップボードを読み取れませんでした。確認が出たら「ペーストを許可」をタップするか、設定でこのAppの「ほかのAppからペースト」を許可してください"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "读不到这台 iPhone 的剪贴板：弹出提示时点「允许粘贴」，或在设置里允许本 App「从其他 App 粘贴」"
+          }
+        }
+      },
+      "extractionState" : "manual"
+    },
     "Couldn't read workout report settings. Turn the feature on again to start fresh.": {"extractionState": "manual", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Couldn't read workout report settings. Turn the feature on again to start fresh."}}, "ja": {"stringUnit": {"state": "translated", "value": "ワークアウトレポートの設定を読み込めませんでした。機能を再度オンにしてやり直してください。"}}, "zh-Hans": {"stringUnit": {"state": "translated", "value": "无法读取运动报告设置。请重新开启此功能以重新开始。"}}}},
     "Off by default. After you enable this, opening Persona checks for new workouts of at least 10 minutes and sends their measurements to your hub to create a report. Older workouts are not imported. Reports already submitted may finish after you turn this off.": {"extractionState": "manual", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Off by default. After you enable this, opening Persona checks for new workouts of at least 10 minutes and sends their measurements to your hub to create a report. Older workouts are not imported. Reports already submitted may finish after you turn this off."}}, "ja": {"stringUnit": {"state": "translated", "value": "初期設定はオフです。有効にすると、Persona を開いた際に新しい10分以上のワークアウトを確認し、測定データを hub に送信してレポートを作成します。有効にする前の運動は取り込みません。オフにしても、送信済みのレポートは完了する場合があります。"}}, "zh-Hans": {"stringUnit": {"state": "translated", "value": "默认关闭。开启后，打开 Persona 会检查新完成且至少持续 10 分钟的运动，并将运动数据发送到你的 hub 生成报告。不导入开启前的运动。关闭后，已提交的报告仍可能完成。"}}}},
     "Reports contain measurement cards and a heart-rate chart when data is available, followed by a brief summary. Health read permissions are managed in iOS Settings; an empty result can also mean access was not granted.": {"extractionState": "manual", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Reports contain measurement cards and a heart-rate chart when data is available, followed by a brief summary. Health read permissions are managed in iOS Settings; an empty result can also mean access was not granted."}}, "ja": {"stringUnit": {"state": "translated", "value": "レポートには測定値カード、データがある場合は心拍数グラフ、簡潔なまとめが含まれます。ヘルスケアの読み取り権限は iOS の設定で管理できます。結果が空の場合、権限が許可されていない可能性もあります。"}}, "zh-Hans": {"stringUnit": {"state": "translated", "value": "报告包含数据卡片、有数据时的心率图，以及简短总结。健康数据读取权限可在 iOS 设置中管理；没有读取到运动也可能是未授予权限。"}}}},
@@ -115863,6 +115886,29 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "拍照没有成功，请再试一次"
+          }
+        }
+      },
+      "extractionState" : "manual"
+    },
+    "The Picture in Picture button next to Close floats the screen over other apps and the Home Screen; tap it to come back here. Picture in Picture is view-only, and closing it disconnects." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The Picture in Picture button next to Close floats the screen over other apps and the Home Screen; tap it to come back here. Picture in Picture is view-only, and closing it disconnects."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "「閉じる」の隣の「ピクチャ・イン・ピクチャ」ボタンで画面を小さなウインドウにして、ほかのAppやホーム画面の上に表示し続けます。タップするとここに戻ります。表示のみで、閉じると切断されます。"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "关闭按钮旁边的「小窗」把画面放进画中画，切到别的 App 或回到桌面也浮着；点小窗回到这里。小窗只能看，关掉小窗就断开。"
           }
         }
       },
