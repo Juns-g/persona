@@ -618,7 +618,8 @@ tap dialog option, hub gets `option` not keys and Dialog changed notice; existin
 Terminal questions of several (`ScreenStepsCardTests`, #2970): `MOCK_SCREEN_STEPS=1 PORT=<dedicated port> python3 scripts/mock/mock_hub.py &`,
 `TEST_RUNNER_PERSONA_STEPS_HUB=http://127.0.0.1:<port> xcodebuild test … -only-testing:PersonaUITests/ScreenStepsCardTests`. The mock's three-question dialog moves as the terminal does
 (← / →, an answer moves on, the node submits the review tab after an answer that names its option): Previous back to the first question with its answer marked, Next on,
-the last answer as keys and the review card before Submit, in light and dark; and a review with a question left (`GET /mock/screen-steps?reset=review`) whose button goes back to it.
+the last answer as keys and the review card before Submit, in light and dark; a review with a question left (`GET /mock/screen-steps?reset=review`) whose button goes back to it;
+and that review at the largest accessibility text size, its stacked buttons and the card's last row reachable above the message box. Every button checked sits above the message box.
 `GET /mock/screen-steps` shows where the dialog is, the answers and every resolution; `TEST_RUNNER_PERSONA_SHOTS=<dir>` writes `steps-*.png`.
 
 New Persona chat from elsewhere (`NewConversationEntryTests`, #527): Inbox Hand to AI immediately shows sent message, not No messages yet;

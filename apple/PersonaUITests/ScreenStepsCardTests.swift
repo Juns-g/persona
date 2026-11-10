@@ -84,12 +84,36 @@ final class ScreenStepsCardTests: XCTestCase {
         XCTAssertTrue(waitUntil(10) { self.state()["done"] as? String == "submitted" }, "Submit did not submit")
     }
 
+    /// At the largest accessibility text size the card scrolls: the review's buttons stack, the main one first, and each
+    /// can be reached above the message box; the question it goes back to is drawn whole too.
+    @MainActor func testTheLargestTextSize() throws {
+        for scheme in ["light", "dark"] {
+            mock("/mock/screen-steps?reset=review")
+            let app = launch(scheme, size: "UICTContentSizeCategoryAccessibilityXXXL")
+            let goAnswer = app.buttons["screen-review-answer"]
+            XCTAssertTrue(goAnswer.waitForExistence(timeout: 20), "no review with a question left:\n\(app.debugDescription)")
+            shot(app, "largest-review-\(scheme)")
+            app.scrollViews["pending-cards"].swipeUp()
+            XCTAssertTrue(clear(app, app.buttons["screen-review-submit-anyway"]), "Submit Without Them can't be reached")
+            XCTAssertTrue(clear(app, app.buttons["screen-card-terminal"].firstMatch), "the card's last row can't be reached")
+            shot(app, "largest-review-end-\(scheme)")
+            guard scheme == "light" else { app.terminate(); continue }
+            app.scrollViews["pending-cards"].swipeDown()
+            XCTAssertTrue(clear(app, goAnswer), "the main button can't be reached")
+            goAnswer.tap()
+            XCTAssertTrue(app.staticTexts["发完通知谁？"].waitForExistence(timeout: 10), "did not go back to the question left")
+            shot(app, "largest-question")
+            app.terminate()
+        }
+    }
+
     // MARK: Helpers
 
-    @MainActor private func launch(_ scheme: String) -> XCUIApplication {
+    @MainActor private func launch(_ scheme: String, size: String? = nil) -> XCUIApplication {
         let app = XCUIApplication()
         let pair = "persona://pair?url=" + hub.addingPercentEncoding(withAllowedCharacters: .alphanumerics)! + "&token=mock"
         app.launchArguments = ["-pairURL", pair, "-openSession", "macbook/" + review, "-ui.scheme", scheme]
+        if let size { app.launchArguments += ["-UIPreferredContentSizeCategoryName", size] }
         app.launchPinned()
         dismissAlerts()
         return app
