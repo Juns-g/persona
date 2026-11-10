@@ -278,10 +278,16 @@ Picture in Picture (`AVSampleBufferDisplayLayer`) needs access to each frame, wh
 - **Frames** (`RFBFramebuffer`):
   - Requests 32-bit, depth 24, little-endian pixels with red at bit 16; BGRA in memory, directly usable as `CVPixelBuffer` 32BGRA.
   - Encoding preference: ZRLE (16), CopyRect (1), Raw (0), plus DesktopSize, ExtendedDesktopSize, Cursor and LastRect pseudo-encodings.
-  - One zlib stream for ZRLE over the whole connection, using Compression raw DEFLATE after skipping the two-byte zlib header.
-  - All five ZRLE tile types: raw, solid, packed palette, plain RLE, palette RLE.
+  - One zlib stream for ZRLE over the whole connection, using Compression raw DEFLATE after skipping the two-byte zlib header (`RFBInflater`).
+  - All five ZRLE tile types: raw, solid, packed palette, plain RLE, palette RLE, written into the framebuffer a row at a time (#3067).
+  - Tight (`RFBTight`, #3067): fill, JPEG (ImageIO, drawn straight into the framebuffer), and the copy, palette and gradient filters on four zlib streams with their reset bits.
+  - The next incremental FramebufferUpdateRequest goes out as soon as an update's header is read, before its rectangles: the server gathers the next update while this one crosses the network and is drawn (#3067). After a size change mid-update, a whole-screen request for the new size follows.
+  - Fence (248) requests are answered (no flags, same data); EndOfContinuousUpdates (150) is taken.
+- **Showing frames** (`RFBFrameSink`, #3067): at most 60 a second, into IOSurface-backed pixel buffers from a pool. Each buffer the pool has handed out keeps the region that changed since it was last filled (by its IOSurface id; the client's damage comes with the framebuffer, `RFBClient.withDamage`), and a frame copies only that region: a new buffer, or one the pool let go and handed out again, is filled whole. The page's fps / latency numbers are reported at most four times a second, so the page doesn't redraw for every frame.
 - **Sending back**: pointer (button bits: left, middle, right, wheel up/down), keys (keysym), clipboard (ClientCutText; RFB only carries Latin-1, other characters go through the node, see "Clipboard" below).
-  - All use one outgoing queue (`AsyncStream`), sent in order by one task after the handshake. Previously a `Task` per message could reorder press/release or move/click on the Mac. Messages before the handshake wait and can't interrupt it.
+  - All use one outgoing queue (`RFBOutbox`), sent in order by one task after the handshake. Previously a `Task` per message could reorder press/release or move/click on the Mac. Messages before the handshake wait and can't interrupt it.
+  - A pointer event that only moves (the same buttons as the event before it) replaces one still waiting that only moved: when the way to the Mac stalls, the pointer goes to where the finger is instead of replaying the path. Presses, releases (where they were made) and wheel notches are never folded (#3067).
+  - The queue's wait ends when its task is cancelled: the client's task group waits for both of its tasks when the reader ends.
 - **Tests**:
   - `RFBClientTests`:
     - large numbers checked against Python;
@@ -290,7 +296,25 @@ Picture in Picture (`AVSampleBufferDisplayLayer`) needs access to each frame, wh
     - complete scripted session, outgoing bytes checked byte for byte;
     - ARD handshake and rejected login;
     - pointer, key and clipboard bytes and order (pre-handshake messages after handshake; 120 messages in original order).
+  - `RFBFrameTests` (#3067): region merging, the outbox folding motion but not presses, releases or notches and ending on cancel, the frame sink copying only what changed with every pixel matching the framebuffer, the next request going out before an update's rectangles are read, Fence and EndOfContinuousUpdates, and Tight against Python's zlib and Go's JPEG.
   - Mock `MOCK_SCREEN=fake` now offers ARD first like macOS (DH in Python, AES with openssl), then ZRLE or Raw as the client requests. It records pointer, clicks, wheel and clipboard (read at `/mock/screen-password`; `?clip=…` sends clipboard to the client). `MOCK_SCREEN_ANIMATE=1` moves a square at about 30 frames per second to measure frame rate.
+
+### Measuring (#3067)
+
+`server/cmd/vncbench` measures a VNC server the way the app uses it, from the computer the server runs on (straight to
+`127.0.0.1:5900`) or through a hub's relay (`-hub <hub address> -machine <id>`, a device token in `VNCBENCH_TOKEN`).
+It signs in with the login keychain's generic password `persona-vnc-bench` (added once with
+`security add-generic-password -s persona-vnc-bench -a "$(id -un)" -w`) or `VNCBENCH_ACCOUNT` / `VNCBENCH_PASSWORD`, never printing it.
+
+- `probe`: which image encodings, pseudo-encodings and pixel formats the server answers with, Apple's private range
+  included, and Tight's bytes and SSIM / PSNR at each quality level against lossless ZRLE.
+- `run -scenes idle,type,scroll,drag,video -config <encodings> -mode stopwait|early|pipeline|continuous`: a bench page of
+  its own shown in a browser on that Mac; per scene the Mbit/s, updates a second, input-to-pixels latency (the page's
+  marker changing colour, split into getting the input and drawing it back), and the picture's SSIM / PSNR against a
+  second, lossless connection of the same moment. `-delay` and `-rate` add a phone link's latency and bandwidth.
+- `record`: what the server sends, for replaying through the app's own client (decode CPU, bytes copied).
+- `relay`: an echo server of its own behind the hub's port relay: small-message round trips and throughput, hop by hop
+  when run on the hub and on the node in turn.
 
 ### Displays (#80)
 
