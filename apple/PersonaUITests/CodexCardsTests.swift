@@ -172,6 +172,7 @@ final class CodexCardsTests: XCTestCase {
         _ = try? Data(contentsOf: URL(string: hub + "/mock/reset")!)
         // The approval out of the way (the mock refuses its first answer): only the question is left.
         for _ in 0..<2 { post(hub + "/api/v1/interactions/cxa_orders_curl/resolve", ["allow": true]) }
+        let before = answered(hub) // the mock keeps every resolution across resets
         addUIInterruptionMonitor(withDescription: "system alert") { alert in
             for label in ["Allow", "允许", "OK", "好"] where alert.buttons[label].exists {
                 alert.buttons[label].tap()
@@ -192,7 +193,7 @@ final class CodexCardsTests: XCTestCase {
         if !goAnswer.waitForExistence(timeout: 2) { app.buttons["提交"].firstMatch.tap() }
         XCTAssertTrue(goAnswer.waitForExistence(timeout: 5), "no review with the skipped question:\n\(app.debugDescription)")
         XCTAssertTrue(anything(app, "未回答").exists, "the skipped question is not marked")
-        XCTAssertFalse(resolved(hub).contains { $0["id"] as? String == "cxq_orders_plan" }, "sent before the review")
+        XCTAssertEqual(answered(hub), before, "sent before the review")
         shot("beautiful-review-skipped")
         goAnswer.tap()
         XCTAssertTrue(anything(app, "订单列表的索引怎么加？").waitForExistence(timeout: 5), "did not go back to the skipped question")
@@ -204,11 +205,8 @@ final class CodexCardsTests: XCTestCase {
         shot("beautiful-review")
         submit.tap()
         let deadline = Date().addingTimeInterval(10)
-        var answers: [String: Any]?
-        while answers == nil, Date() < deadline {
-            answers = (resolved(hub).first { $0["id"] as? String == "cxq_orders_plan" }?["resolution"] as? [String: Any])?["answers"] as? [String: Any]
-            if answers == nil { usleep(300_000) }
-        }
+        while answered(hub) == before, Date() < deadline { usleep(300_000) }
+        let answers = (resolved(hub).last { $0["id"] as? String == "cxq_orders_plan" }?["resolution"] as? [String: Any])?["answers"] as? [String: Any]
         XCTAssertEqual(answers?["订单列表的索引怎么加？"] as? String, "只给 user_id 加索引")
         XCTAssertEqual(answers?["改完以后怎么验证？"] as? String, "预发环境压测")
     }
@@ -238,6 +236,9 @@ final class CodexCardsTests: XCTestCase {
             app.terminate()
         }
     }
+
+    /// How many answers the question has had.
+    private func answered(_ hub: String) -> Int { resolved(hub).filter { $0["id"] as? String == "cxq_orders_plan" }.count }
 
     private func post(_ url: String, _ body: [String: Any]) {
         var req = URLRequest(url: URL(string: url)!)
