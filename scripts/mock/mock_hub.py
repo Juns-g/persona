@@ -8724,11 +8724,14 @@ def subagent_step():
 # MOCK_MESSAGE_LIFT=1: chats for the lifted message of a long press (#603): short messages, the newest one just above the
 # composer, and a long answer with a heading, a list, a code block and a table, taller than any screen, in an Agents chat
 # and in a Persona conversation (#3188: the lifted copy scrolls to its first line); in another Persona conversation, an
-# answer a little shorter than a small phone's screen, which lifts whole, under where Persona's top bar floats. Synthetic text.
+# answer a little shorter than a small phone's screen, which lifts whole, under where Persona's top bar floats. And a long
+# message of yours with paths that are there on the machine (underlined links), and an answer with inline code, a list,
+# a code block and a quote (#3188: the words stay where they are, lifted and selected). Synthetic text.
 LIFT_SHORT = "a1f3c2d4-0000-4000-8000-0000000c1e08"
 LIFT_LONG = "a1f3c2d4-0000-4000-8000-0000000c1e09"
 LIFT_ASK = "b2e4d6f8-0000-4000-8000-0000000c1e09"
 LIFT_ASK_MID = "b2e4d6f8-0000-4000-8000-0000000c1e0a"
+LIFT_MIX = "a1f3c2d4-0000-4000-8000-0000000c1e0b"
 
 
 def mock_message_lift():
@@ -8775,6 +8778,17 @@ def mock_message_lift():
     ITEMS[LIFT_ASK_MID] = [it("user", "text", 12, text="我刚接手这个仓库，有什么要先知道的"),
                            it("assistant", "text", 4, text=mid)]
     ASSISTANT.append(assistant_sess(LIFT_ASK_MID, "接手须知", 4, "要我先带你看哪一块？"))
+    repo = "/Users/me/code/shop-app"
+    mine = ("定时检查：读取 docs/review-queue.md 中没处理的条目、notes/status.md 和最新的截图。按 docs/brief.md 做一轮核对，"
+            "更新日报和待办；发现新问题就在 30 分钟内给出影响、证据和建议。没有新问题就只更新 status 里的核对时间。"
+            "页面保持只读，不要另起新的循环。本批：[{\"at\": \"2026-11-10T16:54:04+00:00\", \"reason\": \"每小时核对；异常数=0\", "
+            "\"evidence\": \"notes/runs/20261110T165351Z/snapshot.json\"}]")
+    mix = ("### 这次核对的结果\n\n没有新问题，只更新了 `notes/status.md` 里的核对时间。\n\n"
+           "- **报错**：只有整点对账时的 6 条，都是已知的夜间噪音。\n- **页面**：首页和设置页的截图和上一批一致。\n\n"
+           "核对用的命令：\n\n```sh\nscripts/check.sh --since 1h --quiet\n```\n\n"
+           "> 日报的模板改过一次，标题里的日期现在按北京时间写。\n\n下一次核对在整点之后五分钟。")
+    ITEMS[LIFT_MIX] = [it("user", "text", 9, text=mine), it("assistant", "text", 7, text=mix)]
+    SESSIONS.append(sess("macbook", LIFT_MIX, "定时核对", repo, "done", "done", "shop-app", 17, "lift", 3, 7, "下一次核对在整点之后五分钟。"))
 
 
 if os.environ.get("MOCK_MESSAGE_LIFT") == "1":
@@ -9754,6 +9768,9 @@ GAP = os.environ.get("MOCK_GAP") == "1"
 # one small file per language for screenshots, and a last message in the widget conversation that names some of them
 # and two that are not there (another machine's path, a deleted file).
 FILES = {}
+if os.environ.get("MOCK_MESSAGE_LIFT") == "1":  # the paths in the lift's long message of yours are there (#3188)
+    for _f in ("docs/review-queue.md", "notes/status.md", "docs/brief.md", "notes/runs/20261110T165351Z/snapshot.json"):
+        FILES["/Users/me/code/shop-app/" + _f] = b"# placeholder\n"
 VIDEO_READS = []
 VIDEO_READ_LOCK = threading.Lock()
 FILE_PAGE = 2 << 20

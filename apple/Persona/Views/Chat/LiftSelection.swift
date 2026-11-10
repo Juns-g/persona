@@ -9,12 +9,13 @@ import UIKit.UIGestureRecognizerSubclass
 
 // A second long press on a lifted message, or Select Text in its bar, selects its words where they are, the system's
 // way: handles to drag, the edit menu with Copy, Quote and Look Up. The chat draws words with MarkdownUI, which cannot
-// select a range on iOS, so while they are selected they are drawn again by a text view laid out like them
-// (`ReplyText`, with the chat's spacing from `ReplyMetrics`): code on its background, quotes behind their bar, lists
-// with their markers, and tables as the chat draws them (a picture that copies as its Markdown). The rest of the
-// message (its bubble or card, what it quotes, its pictures) stays as it was. The bar steps aside for the edit menu;
-// a tap beside the words, or one that clears the selection, brings it back; Copy and Quote close the whole thing, as
-// the bar's own buttons do. The Mac selects in the chat itself and keeps its Select Text window.
+// select a range on iOS, so while they are selected a text view laid out like them (`ReplyText`, with the chat's
+// spacing from `ReplyMetrics`) lies over them: its words are clear, only its highlight and handles show, and the words
+// on screen stay the chat's own, where they were (#3188; drawn by the text view instead, they moved: its layout is
+// close to the chat's, not the same). Lists keep their markers' room, tables are a picture's room that copies as its
+// Markdown. The bar steps aside for the edit menu; a tap beside the words, or one that clears the selection, brings it
+// back; Copy and Quote close the whole thing, as the bar's own buttons do. The Mac selects in the chat itself and
+// keeps its Select Text window.
 
 /// The spacing of a reply's Markdown in the chat (`MarkdownUI.Theme.persona`), also used to lay out the same words for
 /// selecting (`ReplyText`). em values are times the text size.
@@ -71,14 +72,22 @@ extension View {
 
 private struct SelectableInLift: ViewModifier {
     @Environment(\.liftSelect) private var select
+    @Environment(\.liftCopy) private var lifted
     @Environment(MessageMenu.self) private var menu: MessageMenu?
     var text: String
     var words: LiftWords
+    /// The width the words were offered, which they wrap at (they may take less): the text view wraps there too.
+    @State private var place = LiftPlace()
 
     func body(content: Content) -> some View {
         #if os(iOS) || os(visionOS)
-        if let select, let menu {
-            LiftTextView(text: text, words: words, select: select, menu: menu)
+        if lifted {
+            RecordsOffer(place: place) {
+                content.accessibilityHidden(select != nil) // the text view's words, while it is over them
+            }
+            .overlay(alignment: .topLeading) {
+                if let select, let menu { LiftTextView(text: text, words: words, select: select, menu: menu, place: place) }
+            }
         } else {
             content
         }
@@ -159,12 +168,14 @@ private struct LiftTextView: UIViewRepresentable {
     var words: LiftWords
     var select: InPlaceSelect
     var menu: MessageMenu
+    var place: LiftPlace
 
     func makeUIView(context: Context) -> LiftUITextView { LiftUITextView() }
 
     func updateUIView(_ v: LiftUITextView, context: Context) {
         let menu = menu
-        v.show(text, words)
+        v.place = place
+        v.show(text, words, design: UIFontDescriptor.SystemDesign(context.environment.fontDesign))
         if let bar = menu.lift?.bar,
            let quote = menu.selectionQuote(of: SelectableText(text: bar.text, plain: bar.isUser, msg: bar.id, quotable: !bar.pending)) {
             v.quote = { picked in
@@ -179,19 +190,33 @@ private struct LiftTextView: UIViewRepresentable {
         v.begin(select)
     }
 
+    /// Over the words: as large as they are.
     func sizeThatFits(_ proposal: ProposedViewSize, uiView: LiftUITextView, context: Context) -> CGSize? {
-        guard let width = proposal.width, width.isFinite, width > 0 else { return nil }
-        return CGSize(width: width, height: uiView.height(for: width))
+        guard let width = proposal.width, let height = proposal.height, width.isFinite, height.isFinite else { return nil }
+        return CGSize(width: width, height: height)
     }
 }
 
-/// The words in a read-only text view, laid out by `ReplyLayout` (TextKit 1, which draws what is behind the blocks).
+extension UIFontDescriptor.SystemDesign {
+    /// The style's design (`StyleSpec.fontDesign`, set on the whole app): Clay's words are rounded.
+    init(_ design: Font.Design?) {
+        self = switch design ?? .default {
+        case .rounded: .rounded
+        case .serif: .serif
+        case .monospaced: .monospaced
+        default: .default
+        }
+    }
+}
+
+/// The words in a read-only text view laid out by `ReplyLayout` (TextKit 1) over the chat's own, as wide as they are
+/// and wrapping where they wrap (`place`: the width they were offered). Clear: only the highlight and handles show.
 final class LiftUITextView: UITextView, UITextViewDelegate, UIEditMenuInteractionDelegate {
     private let storage = NSTextStorage()
     private let layout = ReplyLayout()
-    /// What is behind the words' blocks, under the selection's highlight: drawn with the words, a code block's
-    /// background covered the highlight and a selected block looked unselected.
-    private let behind = ReplyBlocksView()
+    /// What the words under it were offered (`RecordsOffer`).
+    var place: LiftPlace?
+    private var design = UIFontDescriptor.SystemDesign.default
     /// The menu shown over the words a press picked. The text view's own menu only comes up on its own gestures, and
     /// its interaction is not among `interactions`; this one shows the same items.
     private lazy var menuInteraction = UIEditMenuInteraction(delegate: self)
@@ -215,7 +240,7 @@ final class LiftUITextView: UITextView, UITextViewDelegate, UIEditMenuInteractio
 
     init() {
         let container = NSTextContainer(size: CGSize(width: 0, height: CGFloat.greatestFiniteMagnitude))
-        container.widthTracksTextView = true
+        container.widthTracksTextView = false // the words' wrapping width, set in `layoutSubviews`
         container.lineFragmentPadding = 0
         layout.addTextContainer(container)
         storage.addLayoutManager(layout)
@@ -225,13 +250,10 @@ final class LiftUITextView: UITextView, UITextViewDelegate, UIEditMenuInteractio
         isScrollEnabled = false
         textContainerInset = .zero
         backgroundColor = .clear
+        clipsToBounds = false
+        linkTextAttributes = [.foregroundColor: UIColor.clear]
         delegate = self
         accessibilityIdentifier = "lift-text"
-        behind.layout = layout
-        behind.isUserInteractionEnabled = false
-        behind.backgroundColor = .clear
-        behind.layer.zPosition = -1 // under every other layer of the text view, the highlight's too
-        insertSubview(behind, at: 0)
         addInteraction(menuInteraction)
         addGestureRecognizer(FingerFollower { [weak self] in self?.follow($0) })
         registerForTraitChanges([UITraitPreferredContentSizeCategory.self, UITraitUserInterfaceStyle.self]) { (v: LiftUITextView, _) in
@@ -241,36 +263,41 @@ final class LiftUITextView: UITextView, UITextViewDelegate, UIEditMenuInteractio
 
     required init?(coder: NSCoder) { fatalError("not from a nib") }
 
-    func show(_ text: String, _ words: LiftWords) {
-        guard source?.text != text || source?.words != words else { return }
+    func show(_ text: String, _ words: LiftWords, design: UIFontDescriptor.SystemDesign = .default) {
+        guard source?.text != text || source?.words != words || self.design != design else { return }
         source = (text, words)
+        self.design = design
         render(width: laidOut)
     }
 
     private func render(width: CGFloat) {
         guard let source else { return }
         laidOut = width
-        let look = ReplyText.Look(source.words, traits: traitCollection)
-        attributedText = switch source.words {
+        textContainer.size = CGSize(width: width, height: .greatestFiniteMagnitude)
+        let look = ReplyText.Look(source.words, design: design, traits: traitCollection)
+        let words: NSAttributedString = switch source.words {
         case .plain: ReplyText.plain(source.text, look: look)
         case .reply: ReplyText.attributed(source.text, look: look, width: width)
         }
-        behind.setNeedsDisplay()
+        attributedText = ReplyText.clear(words)
+        #if DEBUG
+        setNeedsLayout() // `LiftLines`
+        #endif
     }
 
-    func height(for width: CGFloat) -> CGFloat {
-        if abs(width - laidOut) > 0.5 { render(width: width) }
-        return ceil(sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude)).height)
+    /// Where the words under it wrap: at the width they were offered, or (none known) at their own.
+    private var wrapWidth: CGFloat {
+        if let w = place?.offer?.width, w.isFinite, w > 0 { return w }
+        return bounds.width
     }
 
     override func layoutSubviews() {
-        if bounds.width > 0, abs(bounds.width - laidOut) > 0.5, !picked { render(width: bounds.width) }
+        let w = wrapWidth
+        if w > 0, abs(w - laidOut) > 0.5, !picked { render(width: w) }
         super.layoutSubviews()
-        let frame = CGRect(x: 0, y: 0, width: bounds.width, height: max(bounds.height, contentSize.height))
-        if behind.frame != frame {
-            behind.frame = frame
-            behind.setNeedsDisplay()
-        }
+        #if DEBUG
+        if LiftLines.on { LiftLines.shared.select = LiftLines.lines(of: self, layout: layout) }
+        #endif
     }
 
     /// The selection's highlight, the same on every line: a line it covers to its end reaches across the whole width,
@@ -281,7 +308,7 @@ final class LiftUITextView: UITextView, UITextViewDelegate, UIEditMenuInteractio
         let start = offset(from: beginningOfDocument, to: range.start), end = offset(from: beginningOfDocument, to: range.end)
         let text = storage.string as NSString
         guard end > start, end <= text.length, let container = layout.textContainers.first else { return super.selectionRects(for: range) }
-        let inset = textContainerInset, right = inset.left + container.size.width
+        let inset = textContainerInset, right = inset.left + min(container.size.width, bounds.width)
         var out: [LineSelectionRect] = []
         let glyphs = layout.glyphRange(forCharacterRange: NSRange(location: start, length: end - start), actualCharacterRange: nil)
         layout.enumerateLineFragments(forGlyphRange: glyphs) { line, used, _, lineGlyphs, _ in
@@ -457,6 +484,37 @@ final class LiftUITextView: UITextView, UITextViewDelegate, UIEditMenuInteractio
     }
 }
 
+#if DEBUG
+extension LiftLines {
+    /// The text view's lines (`LiftUITextView`), as the chat's are written: a picture counts as a glyph.
+    static func lines(of v: UITextView, layout: NSLayoutManager) -> String {
+        guard on else { return "" }
+        let c = v.textContainer, inset = v.textContainerInset
+        layout.ensureLayout(for: c)
+        var out: [Line] = []
+        layout.enumerateLineFragments(forGlyphRange: layout.glyphRange(for: c)) { rect, _, _, range, _ in
+            var first = -1, last = -1, word = -1, n = 0
+            for g in range.location..<NSMaxRange(range) {
+                let kind = layout.propertyForGlyph(at: g)
+                if kind.contains(.controlCharacter) || kind.contains(.null) { continue }
+                if first < 0 { first = g }
+                last = g
+                if !kind.contains(.elastic) { word = g }
+                n += 1
+            }
+            guard first >= 0 else { return }
+            let at = layout.location(forGlyphAt: first)
+            func right(_ g: Int) -> CGFloat { layout.boundingRect(forGlyphRange: NSRange(location: g, length: 1), in: c).maxX }
+            let p = v.convert(CGPoint(x: inset.left + rect.minX + at.x, y: inset.top + rect.minY + at.y), to: nil)
+            let x1 = v.convert(CGPoint(x: inset.left + right(last), y: 0), to: nil).x
+            let w1 = word >= 0 ? v.convert(CGPoint(x: inset.left + right(word), y: 0), to: nil).x : x1
+            out.append((n, p.x, p.y, x1, w1))
+        }
+        return encode(out)
+    }
+}
+#endif
+
 extension NSAttributedString.Key {
     /// What `ReplyLayout` draws behind a run of lines (a `ReplyBlock`).
     nonisolated static let replyBlock = NSAttributedString.Key("PersonaReplyBlock")
@@ -555,9 +613,12 @@ enum ReplyText {
         var color: UIColor
         var link: UIColor
         var traits: UITraitCollection
+        /// The style's design (Clay: rounded), as the chat draws its words: not code's.
+        var design: UIFontDescriptor.SystemDesign
 
-        init(_ words: LiftWords, traits: UITraitCollection) {
-            let base = UIFont.preferredFont(forTextStyle: .body, compatibleWith: traits)
+        init(_ words: LiftWords, design: UIFontDescriptor.SystemDesign = .default, traits: UITraitCollection) {
+            self.design = design
+            let base = Self.designed(UIFont.preferredFont(forTextStyle: .body, compatibleWith: traits), design)
             var quiet = false
             switch words {
             case .plain(let c): color = UIColor(c)
@@ -571,6 +632,30 @@ enum ReplyText {
         }
 
         var size: CGFloat { body.pointSize }
+
+        /// `font` at weight `w`, in the words' design (code stays monospaced).
+        func weight(_ font: UIFont, _ w: UIFont.Weight) -> UIFont {
+            font.fontDescriptor.symbolicTraits.contains(.traitMonoSpace)
+                ? .monospacedSystemFont(ofSize: font.pointSize, weight: w) : Self.designed(.systemFont(ofSize: font.pointSize, weight: w), design)
+        }
+
+        static func designed(_ font: UIFont, _ design: UIFontDescriptor.SystemDesign) -> UIFont {
+            guard design != .default, let d = font.fontDescriptor.withDesign(design) else { return font }
+            return UIFont(descriptor: d, size: font.pointSize)
+        }
+    }
+
+    /// The words clear, for a text view over the chat's own (`LiftUITextView`): no color, no background, a picture's room only.
+    static func clear(_ words: NSAttributedString) -> NSAttributedString {
+        let out = NSMutableAttributedString(attributedString: words)
+        let all = NSRange(location: 0, length: out.length)
+        out.removeAttribute(.backgroundColor, range: all)
+        out.addAttributes([.foregroundColor: UIColor.clear, .underlineColor: UIColor.clear, .strikethroughColor: UIColor.clear], range: all)
+        out.enumerateAttribute(.attachment, in: all) { value, _, _ in
+            guard let a = value as? NSTextAttachment, a.bounds.width > 0, a.bounds.height > 0 else { return }
+            a.image = UIGraphicsImageRenderer(size: a.bounds.size).image { _ in }
+        }
+        return out
     }
 
     /// Your own message, as its bubble shows it: no Markdown.
@@ -714,8 +799,8 @@ enum ReplyText {
                     let m = level == 1 ? (top: ReplyMetrics.heading1.top, bottom: ReplyMetrics.heading1.bottom)
                         : level == 2 ? ReplyMetrics.heading2 : ReplyMetrics.heading3
                     blocks.append(Block(top: m.top, bottom: m.bottom))
-                    let font = level == 1 ? Self.weight(look.body.withSize(look.size * ReplyMetrics.heading1.size), .bold)
-                        : Self.weight(look.body, .semibold)
+                    let font = level == 1 ? look.weight(look.body.withSize(look.size * ReplyMetrics.heading1.size), .bold)
+                        : look.weight(look.body, .semibold)
                     add(inline(title, font: font), in: blocks.count - 1)
                     open = nil
                     levels = []
@@ -937,7 +1022,7 @@ enum ReplyText {
                     f = look.inlineCode.withSize(font.pointSize * ReplyMetrics.inlineCode)
                     attrs[.backgroundColor] = UIColor(Theme.codeBackground)
                 }
-                if intent.contains(.stronglyEmphasized) { f = Self.weight(f, .semibold) }
+                if intent.contains(.stronglyEmphasized) { f = look.weight(f, .semibold) }
                 if intent.contains(.emphasized), let d = f.fontDescriptor.withSymbolicTraits(f.fontDescriptor.symbolicTraits.union(.traitItalic)) {
                     f = UIFont(descriptor: d, size: 0)
                 }
@@ -1004,10 +1089,6 @@ enum ReplyText {
             return t.allSatisfy { "|-: \t".contains($0) }
         }
 
-        static func weight(_ f: UIFont, _ w: UIFont.Weight) -> UIFont {
-            f.fontDescriptor.symbolicTraits.contains(.traitMonoSpace)
-                ? .monospacedSystemFont(ofSize: f.pointSize, weight: w) : .systemFont(ofSize: f.pointSize, weight: w)
-        }
     }
 }
 

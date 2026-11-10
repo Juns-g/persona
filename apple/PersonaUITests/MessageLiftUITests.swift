@@ -16,6 +16,8 @@ final class MessageLiftUITests: XCTestCase {
     private let askLong = "server/b2e4d6f8-0000-4000-8000-0000000c1e09"
     /// An answer a little shorter than a small phone's screen, in another.
     private let askMid = "server/b2e4d6f8-0000-4000-8000-0000000c1e0a"
+    /// A long message of yours with path links, and an answer with inline code, a list, a code block and a quote.
+    private let mix = "macbook/a1f3c2d4-0000-4000-8000-0000000c1e0b"
     private let schemes = (ProcessInfo.processInfo.environment["PERSONA_LIFT_SCHEME"] ?? "light").split(separator: ",").map(String.init)
     private var scheme = "light"
 
@@ -224,6 +226,122 @@ final class MessageLiftUITests: XCTestCase {
             XCTAssertGreaterThanOrEqual(words.frame.minY, edge, "held at the top edge, the handle scrolled the lifted copy up to its first line")
             XCTAssertTrue(app.textViews["lift-text"].exists, "still selecting")
             shot("handle-top")
+        }
+    }
+
+    // MARK: The words stay where they are: in the chat, lifted, and selected in place (#3188)
+
+    /// A line of words as `LiftLines` writes it: its glyphs, its first glyph's left edge, its baseline, its last glyph's
+    /// right edge, and (the text view's) its last word's.
+    private struct Line: CustomStringConvertible {
+        var glyphs: Int, minX: Double, baseline: Double, maxX: Double, wordsMaxX: Double
+        var description: String { "\(glyphs)@(\(minX), \(baseline))…\(maxX)" }
+    }
+
+    private struct Lines { var chat: [Line], lift: [Line], select: [Line] }
+
+    private static func parse(_ s: Substring) -> [Line] {
+        s.split(separator: ";").compactMap { l in
+            let v = l.split(separator: ",").compactMap { Double($0) }
+            return v.count == 5 ? Line(glyphs: Int(v[0]), minX: v[1], baseline: v[2], maxX: v[3], wordsMaxX: v[4]) : nil
+        }
+    }
+
+    /// What `-showLiftLines` writes, once it holds still (the lifted copy, and the text view over it, laid out).
+    @MainActor private func lines(selecting: Bool = false) -> Lines {
+        let e = app.descendants(matching: .any)["lift-lines"].firstMatch
+        XCTAssertTrue(e.waitForExistence(timeout: 5), "no lift-lines (-showLiftLines)")
+        var last = "", now = ""
+        for _ in 0..<10 {
+            now = e.value as? String ?? ""
+            let ready = !now.contains("lift=|") && (!selecting || !now.hasSuffix("select="))
+            if ready, now == last { break }
+            last = now
+            usleep(500_000)
+        }
+        var parts: [String: Substring] = [:]
+        for p in now.split(separator: "|") {
+            if let eq = p.firstIndex(of: "=") { parts[String(p[..<eq])] = p[p.index(after: eq)...] }
+        }
+        return Lines(chat: Self.parse(parts["chat"] ?? ""), lift: Self.parse(parts["lift"] ?? ""), select: Self.parse(parts["select"] ?? ""))
+    }
+
+    /// Where `b` differs from `a` by more than half a point (all of it moved by `dy`); nil: nowhere.
+    /// glyphs: the lines hold the same glyphs (the same engine); else the text view's count may add a line's end.
+    private static func difference(_ a: [Line], _ b: [Line], dy: Double = 0, sameEngine: Bool = true) -> String? {
+        guard !a.isEmpty else { return "no lines" }
+        guard a.count == b.count else { return "\(a.count) lines, then \(b.count):\n\(a)\n\(b)" }
+        for (i, (x, y)) in zip(a, b).enumerated() {
+            let right = sameEngine ? y.maxX : y.wordsMaxX
+            let off = [abs(x.minX - y.minX), abs(x.baseline + dy - y.baseline), abs(x.maxX - right)].max()!
+            let count = sameEngine ? x.glyphs == y.glyphs : abs(x.glyphs - y.glyphs) <= 1
+            if off > 0.5 || !count { return "line \(i + 1): \(x) then \(y) (moved by \(dy))\nall: \(a)\nthen: \(b)" }
+        }
+        return nil
+    }
+
+    /// Lifts the message with `words` and selects all of its words in place: in each state its lines are where the
+    /// chat drew them. Lifted, a message with no room for its bar beside it moves (all of it, upright, `moves`); the
+    /// text view over the selected words lays them out as the chat did (`selectMatches`), within half a point.
+    @MainActor private func checkTheWordsStay(_ words: String, _ name: String, moves: Bool = false, selectMatches: Bool = true) {
+        liftAt(words)
+        let lifted = lines()
+        let dy = (lifted.lift.first?.baseline ?? 0) - (lifted.chat.first?.baseline ?? 0)
+        if !moves { XCTAssertLessThanOrEqual(abs(dy), 0.5, "\(name): lifted, it moved by \(dy)") }
+        if let d = Self.difference(lifted.chat, lifted.lift, dy: dy) { XCTFail("\(name): lifted, its words moved: \(d)") }
+        shot(name + "-lifted")
+        app.buttons["选择文本"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.85)).tap()
+        XCTAssertTrue(app.textViews["lift-text"].waitForExistence(timeout: 5), "\(name): 选择文本 did not select in place")
+        let selected = lines(selecting: true)
+        if let d = Self.difference(lifted.lift, selected.lift) { XCTFail("\(name): selecting, its words moved: \(d)") }
+        if selectMatches, let d = Self.difference(selected.lift, selected.select, sameEngine: false) {
+            XCTFail("\(name): the text view over the words lays them out differently: \(d)")
+        }
+        print("LIFT-LINES \(name) dy=\(dy)\n chat=\(lifted.chat)\n lift=\(lifted.lift)\n select=\(selected.select)")
+        shot(name + "-selected")
+    }
+
+    @MainActor private func launchWithLines(_ chat: String, persona: Bool = false, style: String? = nil) {
+        let extra = ["-showLiftLines", "YES"] + (style.map { ["-ui.style", $0] } ?? [])
+        if persona { launchPersona(chat, extra) } else { launch(chat, extra) }
+    }
+
+    /// Your own messages: a short one, and a long one with path links (the case reported).
+    @MainActor func testYourMessageStaysWhereItIs() throws {
+        inEachScheme {
+            launchWithLines(short)
+            checkTheWordsStay("可以，就这么改", "mine-short")
+            app = XCUIApplication()
+            launchWithLines(mix)
+            checkTheWordsStay("定时检查", "mine-long", moves: true)
+        }
+    }
+
+    /// Answers: a short one, one with inline code, a list, a code block and a quote, and one taller than the screen.
+    @MainActor func testAnAnswerStaysWhereItIs() throws {
+        inEachScheme {
+            launchWithLines(short)
+            checkTheWordsStay("收到，都提交了", "answer-short")
+            app = XCUIApplication()
+            launchWithLines(mix)
+            checkTheWordsStay("下一次核对在整点之后五分钟", "answer-mixed", moves: true)
+            app = XCUIApplication()
+            launchWithLines(long)
+            checkTheWordsStay("有问题的话告诉我", "answer-long", moves: true)
+        }
+    }
+
+    /// In Persona's conversation (its answers in a box, your messages pale) and in the Clay style (rounded words).
+    @MainActor func testTheWordsStayInPersonasConversationAndInClay() throws {
+        inEachScheme {
+            launchWithLines(askMid, persona: true)
+            checkTheWordsStay("要我先带你看哪一块", "persona-answer", moves: true)
+            app = XCUIApplication()
+            launchWithLines(mix, style: "clay")
+            checkTheWordsStay("定时检查", "clay-mine", moves: true)
+            app = XCUIApplication()
+            launchWithLines(mix, style: "clay")
+            checkTheWordsStay("下一次核对在整点之后五分钟", "clay-answer", moves: true)
         }
     }
 }

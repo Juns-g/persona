@@ -22,12 +22,19 @@ extension EnvironmentValues {
 
 /// The pressed message: what its bar offers, where it was (global) and where in it the press landed, and the part drawn
 /// again. card: words on the page with nothing around them (an answer), lifted on a card of their own.
+///
+/// The part is drawn again exactly as it was (#3188): offered the size the chat offered it (`offer`), not the size it
+/// took (a bubble that hugs its widest line, offered that width rounded to pixels, lost the line's last character to
+/// the next line, and every line after it wrapped differently), and in the environment it was drawn in (`environment`:
+/// the chat sets the conversation's layout, the file scope its path links need and MarkdownUI's soft breaks around its rows).
 struct MessageLift {
     var bar: MessageBarInfo
     var frame: CGRect
     var press: CGPoint
     var preview: AnyView
     var card: Bool
+    var offer: ProposedViewSize? = nil
+    var environment: EnvironmentValues? = nil
 }
 
 /// Where a pressable part is, written on every scrolled frame without drawing anything again (not observed).
@@ -38,6 +45,49 @@ final class LiftPlace {
         var row: CGRect = .zero
     }
     var frames = Frames()
+    /// The size the chat offered it (`RecordsOffer`) and the environment around it (`LongPressAt`).
+    var offer: ProposedViewSize?
+    var environment: EnvironmentValues?
+}
+
+/// Lays out its one view as its parent asks, and keeps what that parent offered it (`LiftPlace.offer`), for the same
+/// view drawn again elsewhere to be offered the same (`Offers`).
+struct RecordsOffer: Layout {
+    let place: LiftPlace
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        subviews.first?.sizeThatFits(proposal) ?? .zero
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        place.offer = proposal
+        subviews.first?.place(at: bounds.origin, proposal: proposal)
+    }
+}
+
+/// Offers its one view `offer` whatever its parent offers (and is as large as the view takes then); nil: what the parent offers.
+struct Offers: Layout {
+    let offer: ProposedViewSize?
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        subviews.first?.sizeThatFits(offer ?? proposal) ?? .zero
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        subviews.first?.place(at: bounds.origin, proposal: offer ?? proposal)
+    }
+}
+
+extension EnvironmentValues {
+    /// Inside a lifted copy (`MessageLiftLayer`), for its whole life, selecting or not.
+    @Entry var liftCopy = false
+}
+
+extension View {
+    /// The whole environment a view was drawn in elsewhere (its own, where there is none).
+    @ViewBuilder func environment(from values: EnvironmentValues?) -> some View {
+        if let values { environment(\EnvironmentValues.self, values) } else { self }
+    }
 }
 
 /// Where the lifted message and its bar go.
@@ -122,6 +172,63 @@ extension EnvironmentValues {
     @Entry var messageLiftHost: MessageLiftHost? = nil
 }
 
+#if DEBUG
+/// For the UI tests (#3188), with `-showLiftLines YES`: where each line of a pressed message's words is drawn in the chat,
+/// in its lifted copy, and in the text view over that copy while its words are selected, for a test to check that
+/// nothing moves. A line: its glyphs, its first glyph's left edge, its baseline, its last glyph's right edge (and for the
+/// text view, the last one that is not a space's), in the window, at a tenth of a point.
+@Observable final class LiftLines {
+    static let shared = LiftLines()
+    static let on = UserDefaults.standard.bool(forKey: "showLiftLines")
+    /// By message id.
+    var chat: [String: String] = [:]
+    var lift = ""
+    var select = ""
+
+    typealias Line = (glyphs: Int, minX: CGFloat, baseline: CGFloat, maxX: CGFloat, wordsMaxX: CGFloat)
+
+    static func encode(_ lines: [Line]) -> String {
+        lines.sorted { ($0.baseline, $0.minX) < ($1.baseline, $1.minX) }
+            .map { String(format: "%ld,%.1f,%.1f,%.1f,%.1f", $0.glyphs, $0.minX, $0.baseline, $0.maxX, $0.wordsMaxX) }
+            .joined(separator: ";")
+    }
+
+    /// The lines of every text under a view (`Text.LayoutKey`), placed by its geometry.
+    static func lines(_ layouts: Text.LayoutKey.Value, _ geo: GeometryProxy) -> String {
+        let o = geo.frame(in: .global).origin
+        var out: [Line] = []
+        for a in layouts {
+            let p = geo[a.origin]
+            for line in a.layout {
+                let n = line.reduce(0) { $0 + $1.count }
+                guard n > 0, let fr = line.first, let lr = line.last, let fg = fr.first, let lg = lr.last else { continue }
+                let x0 = o.x + p.x + fg.typographicBounds.rect.minX, x1 = o.x + p.x + lg.typographicBounds.rect.maxX
+                out.append((n, x0, o.y + p.y + line.typographicBounds.origin.y, x1, x1))
+            }
+        }
+        return encode(out)
+    }
+}
+
+/// Writes where the lines of the texts under it are (`LiftLines`).
+struct LiftLinesReader: ViewModifier {
+    let write: (String) -> Void
+
+    func body(content: Content) -> some View {
+        if LiftLines.on {
+            content.overlayPreferenceValue(Text.LayoutKey.self) { layouts in
+                GeometryReader { geo in
+                    let s = LiftLines.lines(layouts, geo)
+                    Color.clear.onAppear { write(s) }.onChange(of: s) { _, s in write(s) }
+                }
+            }
+        } else {
+            content
+        }
+    }
+}
+#endif
+
 /// The dimmed chat, the lifted message and its bar, over the whole chat page while a message is pressed.
 struct MessageLiftLayer: View {
     var menu: MessageMenu
@@ -143,7 +250,7 @@ private struct LiftedMessage: View {
     /// The layer's frame, global.
     var space: CGRect
     @State private var fade = Fade()
-    /// The drawn message's height, which its words take again while they are selected (laid out by a text view).
+    /// The drawn copy's height (the same as the message's where it was, unless something it reads differs).
     @State private var height: CGFloat = 0
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -176,12 +283,19 @@ private struct LiftedMessage: View {
         let bounds = bounds
         let f = lift.frame.offsetBy(dx: -space.minX, dy: -space.minY)
         let message = CGRect(x: f.minX - pad.leading, y: f.minY - pad.top, width: f.width + pad.leading + pad.trailing,
-                             height: selecting && height > 0 ? height : f.height + pad.top + pad.bottom)
+                             height: height > 0 ? height : f.height + pad.top + pad.bottom)
         let count = MessageActionBar.count(id: lift.bar.id, isUser: lift.bar.isUser, menu: menu, pending: lift.bar.pending)
         let barWidth = min(MessageActionBar.width(count: count), bounds.width - 2 * Theme.Space.s)
         let p = LiftLayout.place(message: message, press: lift.press.y + pad.top, bar: CGSize(width: barWidth, height: MessageActionBar.height),
                                  bounds: bounds, margin: Theme.Space.s, gap: Theme.Space.s, trailing: lift.bar.isUser)
         ZStack(alignment: .topLeading) {
+            #if DEBUG
+            if LiftLines.on {
+                let l = LiftLines.shared
+                Color.clear.allowsHitTesting(false).accessibilityElement().accessibilityIdentifier("lift-lines")
+                    .accessibilityValue("chat=\(l.chat[lift.bar.id] ?? "")|lift=\(l.lift)|select=\(selecting ? l.select : "")")
+            }
+            #endif
             backdrop
             preview(p, whole: message.height)
                 .frame(width: p.preview.width, height: p.preview.height)
@@ -216,9 +330,11 @@ private struct LiftedMessage: View {
         let cut = p.preview.height < whole - 1
         let shape = RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
         ScrollView(.vertical) {
-            lift.preview
+            Offers(offer: lift.offer) { lift.preview }
                 .environment(\.liftSelect, menu.inPlace)
+                .environment(\.liftCopy, true)
                 .environment(menu)
+                .environment(from: lift.environment) // outside those: they are this copy's own
                 .frame(width: lift.frame.width, alignment: .leading)
                 .padding(pad)
                 .allowsHitTesting(selecting)
