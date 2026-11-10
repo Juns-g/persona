@@ -40,7 +40,13 @@ final class ScreenStepsCardTests: XCTestCase {
             shot(app, "back-\(scheme)")
             guard scheme == "light" else { app.terminate(); continue }
             // Next keeps it and goes on; the second question comes back although this device ended its card.
-            if app.buttons["screen-step-next"].exists { app.buttons["screen-step-next"].tap() } else { app.buttons["发送"].firstMatch.tap() }
+            if app.buttons["screen-step-next"].exists {
+                app.buttons["screen-step-next"].tap()
+            } else {
+                // BeautifulUI's card says Next on a question gone back to, not Send.
+                XCTAssertFalse(app.buttons["发送"].exists, "Send on a question gone back to")
+                app.buttons["下一题"].firstMatch.tap()
+            }
             XCTAssertTrue(app.staticTexts["哪些平台要一起发？"].waitForExistence(timeout: 10), "Next did not go on")
             option(app, "手表").tap()
             app.buttons["下一题"].firstMatch.tap()
