@@ -1,14 +1,17 @@
 package main
 
-// benchPage is the page the scenes run in (scene.go). Its corner markers (magenta top left, cyan bottom right) let
-// the framebuffer be matched to it; the square at 16 px changes colour on every input it gets, the one at 44 px is
-// green while it has the keyboard. It follows /state (the scene, frozen or not) and reports inputs to /event.
+// benchPage is the page the scenes run in (scene.go). Its markers (magenta in the top left corner, cyan 24 px in
+// from the bottom right one, out of a window's rounded corner) let the framebuffer be matched to it; the square at
+// 16 px changes colour on every input it gets, the one at 44 px is green while it has the keyboard. Each scene that
+// takes input has a target (a magenta and cyan checker that clicks pass through) where the input goes: the harness
+// acts only once it sees it, so nothing lands in another window over the page. It follows /state (the scene, frozen or not) and reports inputs to /event.
 const benchPage = `<!doctype html>
 <html><head><meta charset="utf-8"><title>vncbench</title>
 <style>
 html,body{margin:0;height:100%;overflow:hidden;background:#ececec;font:15px/1.45 -apple-system,Helvetica,sans-serif;color:#1d1d1f}
 #tl{position:fixed;left:0;top:0;width:12px;height:12px;background:#f0f;z-index:9}
-#br{position:fixed;right:0;bottom:0;width:12px;height:12px;background:#0ff;z-index:9}
+#br{position:fixed;right:24px;bottom:24px;width:16px;height:16px;background:#0ff;z-index:9}
+.tg{position:absolute;width:24px;height:24px;pointer-events:none;z-index:8;background:conic-gradient(#0ff 0 25%,#f0f 0 50%,#0ff 0 75%,#f0f 0)}
 #mk{position:fixed;left:16px;top:0;width:24px;height:24px;background:rgb(230,30,30);z-index:9}
 #fc{position:fixed;left:44px;top:0;width:24px;height:24px;background:rgb(200,40,40);z-index:9}
 #bar{position:fixed;left:72px;top:0;right:12px;height:28px;font-size:12px;line-height:28px;color:#666;padding-left:8px}
@@ -22,13 +25,13 @@ html,body{margin:0;height:100%;overflow:hidden;background:#ececec;font:15px/1.45
 #idle .side div{padding:6px 10px;border-radius:6px}
 #idle .side div:nth-child(2){background:#e8f0fe}
 #type textarea{position:absolute;inset:20px;width:calc(100% - 40px);height:calc(100% - 40px);font:18px/1.5 Menlo,monospace;border:1px solid #ccc;border-radius:8px;padding:16px;box-sizing:border-box;outline:none}
-#scroll{overflow-y:scroll}
+#scroller{position:absolute;inset:0;overflow-y:scroll}
 #scroll section{max-width:820px;margin:0 auto;padding:16px 24px}
 #scroll h2{margin:8px 0}
 #scroll img,#scroll canvas{width:100%;height:380px;object-fit:cover;border-radius:8px;display:block}
 #drag{background:linear-gradient(135deg,#dfe7f3,#f6efe6)}
 #panel{position:absolute;left:60px;top:60px;width:640px;height:420px;background:#fff;border-radius:10px;box-shadow:0 12px 40px rgba(0,0,0,.25);overflow:hidden}
-#panel .head{height:28px;background:#e9e9ec;border-bottom:1px solid #d0d0d4;font-size:13px;line-height:28px;text-align:center;cursor:grab}
+#panel .head{position:relative;height:28px;background:#e9e9ec;border-bottom:1px solid #d0d0d4;font-size:13px;line-height:28px;text-align:center;cursor:grab}
 #panel img,#panel canvas{width:300px;height:200px;object-fit:cover;float:left;margin:12px;border-radius:6px}
 #panel p{margin:12px;font-size:14px}
 #video{background:#000}
@@ -37,9 +40,9 @@ html,body{margin:0;height:100%;overflow:hidden;background:#ececec;font:15px/1.45
 <div id="tl"></div><div id="br"></div><div id="mk"></div><div id="fc"></div><div id="bar">vncbench</div>
 <div id="stage">
  <div class="scene" id="idle"><h1>Quarterly notes</h1><div class="side"><div>Inbox</div><div>Drafts</div><div>Sent</div><div>Archive</div><div>Projects</div><div>Calendar</div></div><span class="ph"></span><div class="txt"></div></div>
- <div class="scene" id="type"><textarea spellcheck="false" placeholder="Type here"></textarea></div>
- <div class="scene" id="scroll"></div>
- <div class="scene" id="drag"><div id="panel"><div class="head">Preview — drag me</div><span class="ph"></span><div class="txt"></div></div></div>
+ <div class="scene" id="type"><textarea spellcheck="false" placeholder="Type here"></textarea><div class="tg" style="left:48px;top:48px"></div></div>
+ <div class="scene" id="scroll"><div id="scroller"></div><div class="tg" style="left:48px;top:48px;position:fixed;margin-top:28px"></div></div>
+ <div class="scene" id="drag"><div id="panel"><div class="head">Preview — drag me<div class="tg" style="left:12px;top:2px"></div></div><span class="ph"></span><div class="txt"></div></div></div>
  <div class="scene" id="video"><canvas width="960" height="540"></canvas></div>
 </div>
 <script>
@@ -64,15 +67,15 @@ function picture(i,w,h){ if(photos>0){ const im=new Image(); im.src='/photo/'+(i
 function build(){
   document.querySelectorAll('.txt').forEach(e=>{ let s=''; for(let i=0;i<6;i++) s+=para(40); e.innerHTML=s; });
   document.querySelectorAll('.ph').forEach((e,i)=>e.replaceWith(picture(i,520,340)));
-  const sc=document.getElementById('scroll'); for(let i=0;i<30;i++){ const s=document.createElement('section'); s.innerHTML='<h2>Section '+(i+1)+'</h2>'+para(60)+para(50);
+  const sc=document.getElementById('scroller'); for(let i=0;i<30;i++){ const s=document.createElement('section'); s.innerHTML='<h2>Section '+(i+1)+'</h2>'+para(60)+para(50);
     s.appendChild(picture(i+2,820,380)); s.insertAdjacentHTML('beforeend',para(70)); sc.appendChild(s); }
 }
 function show(s){ if(s===scene) return; scene=s; document.querySelectorAll('.scene').forEach(e=>e.classList.toggle('on',e.id===s)); bar.textContent='vncbench · '+s; }
 setInterval(()=>{ fc.style.background=document.hasFocus()&&document.activeElement&&document.activeElement.tagName==='TEXTAREA'?'rgb(30,200,30)':'rgb(200,40,40)'; },100);
 async function poll(){ try{ const r=await fetch('/state'); const s=await r.json(); if(photos!==s.photos && !document.querySelector('section')){ photos=s.photos; build(); } show(s.scene); frozen=s.freeze; }catch(e){} setTimeout(poll,100); }
 document.addEventListener('keydown',e=>{ bump(); report('key',e); });
-document.getElementById('scroll').addEventListener('wheel',e=>report('wheel',e),{passive:true});
-document.getElementById('scroll').addEventListener('scroll',()=>bump(),{passive:true});
+document.getElementById('scroller').addEventListener('wheel',e=>report('wheel',e),{passive:true});
+document.getElementById('scroller').addEventListener('scroll',()=>bump(),{passive:true});
 const panel=document.getElementById('panel'); let drag=null;
 panel.querySelector('.head').addEventListener('pointerdown',e=>{ drag={x:e.clientX-panel.offsetLeft,y:e.clientY-panel.offsetTop}; report('down',e); });
 document.addEventListener('pointermove',e=>{ if(!drag) return; panel.style.left=(e.clientX-drag.x)+'px'; panel.style.top=(e.clientY-drag.y)+'px'; bump(); report('move',e); });

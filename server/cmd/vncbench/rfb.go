@@ -211,6 +211,8 @@ type client struct {
 	zlib  zstream
 	// tightKinds counts Tight rectangles by kind (tightFill…), when set.
 	tightKinds []int64
+	// The rectangle being read and how many the update has.
+	rectIndex, rectCount int
 
 	// What the server said it supports by answering for it.
 	ContinuousOK atomic.Bool
@@ -222,6 +224,11 @@ type client struct {
 	OnUpdate func(u updateInfo)
 	// OnUpdateStart sees each update's header, before its rectangles are read.
 	OnUpdateStart func()
+	// OnRequest sees each FramebufferUpdateRequest as it goes out (trace).
+	OnRequest func(incremental bool, r image.Rectangle)
+	// OnFirstSize sees the first rectangle of an update of count rectangles once its size in bytes is known, before
+	// its data is read (the gated way of asking).
+	OnFirstSize func(count int, size int)
 	// OnRect sees each rectangle's header and its byte count once read (the probe stops at unknown ones).
 	OnRect func(x, y, w, h int, enc int32, bytes int64)
 	// Unknown is the first encoding this client could not decode, if any (the connection is then unusable).
@@ -469,6 +476,9 @@ func (c *client) SetEncodings(encs []int32) error {
 }
 
 func (c *client) Request(incremental bool, r image.Rectangle) error {
+	if c.OnRequest != nil {
+		c.OnRequest(incremental, r)
+	}
 	inc := byte(0)
 	if incremental {
 		inc = 1
@@ -598,7 +608,9 @@ func (c *client) update() error {
 	u := updateInfo{Start: start, Encodings: map[int32]int{}}
 	c.fbMu.Lock()
 	defer c.fbMu.Unlock()
+	c.rectIndex, c.rectCount = 0, count
 	for i := 0; i < count; i++ {
+		c.rectIndex = i
 		var rh [12]byte
 		at := c.in.n.Load() - int64(c.r.Buffered())
 		if _, err := io.ReadFull(c.r, rh[:]); err != nil {
@@ -641,8 +653,10 @@ func (c *client) rect(x, y, w, h int, enc int32) (paints bool, err error) {
 		if !inside {
 			return false, fmt.Errorf("raw rect outside")
 		}
+		c.firstSize(w * h * c.pf.bytesPerPixel())
 		return true, c.raw(x, y, w, h)
 	case encCopyRect:
+		c.firstSize(4)
 		sx, _ := c.u16()
 		sy, err := c.u16()
 		if err != nil {
@@ -700,6 +714,12 @@ func (c *client) rect(x, y, w, h int, enc int32) (paints bool, err error) {
 	}
 	c.Unknown.CompareAndSwap(0, enc)
 	return false, fmt.Errorf("%w %d (%s)", errUnknown, enc, encName(enc))
+}
+
+func (c *client) firstSize(n int) {
+	if c.rectIndex == 0 && c.OnFirstSize != nil {
+		c.OnFirstSize(c.rectCount, n)
+	}
 }
 
 func (c *client) resize(w, h int) {

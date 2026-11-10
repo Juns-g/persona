@@ -1584,3 +1584,11 @@ When server tests read a shared fixture outside `server/`, include it in `script
 relative path and create its remote parent directory. The inbox list tests read `scripts/mock/inbox_events.json`;
 copying only the Go module left them failing on the test machine. Extend the fake remote launcher test to read the
 staged fixture from the package directory, check refreshed contents, and reject a missing source before Go starts.
+
+## What the port relay costs, hop by hop (2026-11-10, #3067)
+
+`server/cmd/vncbench relay` puts an echo server behind `…/ports/{port}/connect`. With everything on the hub machine
+(client, hub, manager, its own node) a small message's round trip is 1.6 ms, 0.8 ms more than a WebSocket ping to the
+hub, and a download runs at 88 MB/s: the hub, the bus, the manager and the stream mux are not where a live screen's
+latency goes. The hub → node leg (`ssh -T` over Tailscale on the LAN) is where it varies; plain `ssh host cat` shows the
+same spread, and the Mac's `sshd-session` already has TCP_NODELAY (lsof `-T f`: TF flag 0x4), so it is not Nagle.

@@ -2,14 +2,19 @@ package main
 
 import (
 	"context"
+	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"image"
+	"image/png"
 	"io"
+	"os"
 	"slices"
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -24,13 +29,38 @@ type session struct {
 	// requests: how this session asks for updates (stopwait: one after each update is drawn; early: one as each
 	// update's header comes; pipeline: keeps two asked; continuous: ContinuousUpdates; none: the caller asks).
 	requests string
+	// area is the part of the screen incremental requests ask for (empty: all of it), as a zoomed-in view would.
+	area atomic.Value
+}
+
+// gatedLimit is the largest update asked past early in the gated way: well inside a server's socket buffer, so the
+// request never reaches it while it is still writing (macOS's Screen Sharing then goes quiet for up to two seconds).
+const gatedLimit = 64 << 10
+
+// asked is the part incremental requests are for.
+func (s *session) asked() image.Rectangle {
+	if r, ok := s.area.Load().(image.Rectangle); ok && !r.Empty() {
+		return r
+	}
+	return s.Whole()
 }
 
 func start(c *client, requests string) *session {
 	s := &session{client: c, requests: requests}
 	s.cond = sync.NewCond(&s.mu)
 	if requests == "early" {
-		c.OnUpdateStart = func() { _ = c.Request(true, c.Whole()) }
+		c.OnUpdateStart = func() { _ = c.Request(true, s.asked()) }
+	}
+	// gated: early when the update is one small rectangle (its bytes known before they are read), else once it is in.
+	var gatedAsked bool
+	if requests == "gated" {
+		c.OnUpdateStart = func() { gatedAsked = false }
+		c.OnFirstSize = func(count, size int) {
+			if count == 1 && size <= gatedLimit {
+				gatedAsked = true
+				_ = c.Request(true, s.asked())
+			}
+		}
 	}
 	c.OnUpdate = func(u updateInfo) {
 		s.mu.Lock()
@@ -39,7 +69,11 @@ func start(c *client, requests string) *session {
 		s.mu.Unlock()
 		switch s.requests {
 		case "stopwait", "pipeline":
-			_ = c.Request(true, c.Whole())
+			_ = c.Request(true, s.asked())
+		case "gated":
+			if !gatedAsked {
+				_ = c.Request(true, s.asked())
+			}
 		}
 	}
 	go func() {
@@ -368,6 +402,91 @@ func probeTight(ctx context.Context, t target, cred credentials) error {
 		}
 		q := compare(r.shot, ref.shot, ref.shot.Rect)
 		fmt.Printf("| %s | %s | %d | %.0f%% | %.4f | %.1f | %v |\n", a.name, r.used, r.bytes, 100*float64(r.bytes)/float64(ref.bytes), q.SSIM, q.PSNR, r.kinds)
+	}
+	return nil
+}
+
+// shot saves the screen as the app would get it (ZRLE, 32-bit) to a PNG, scaled down by scale.
+func shot(ctx context.Context, t target, cred credentials, path string, scale int) error {
+	r, err := oneUpdate(ctx, t, cred, pf32, []int32{encZRLE})
+	if err != nil {
+		return err
+	}
+	img := r.shot
+	if scale > 1 {
+		b := img.Rect
+		small := image.NewRGBA(image.Rect(0, 0, b.Dx()/scale, b.Dy()/scale))
+		for y := 0; y < small.Rect.Dy(); y++ {
+			for x := 0; x < small.Rect.Dx(); x++ {
+				small.Set(x, y, img.At(x*scale, y*scale))
+			}
+		}
+		img = small
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	return png.Encode(f, img)
+}
+
+// probePrivate asks for encodings lo…hi in chunks of size before Raw, each on a connection of its own, and says what
+// each chunk was answered with.
+func probePrivate(ctx context.Context, t target, cred credentials, lo, hi, size int32) {
+	for a := lo; a <= hi; a += size {
+		var encs []int32
+		for e := a; e < a+size && e <= hi; e++ {
+			encs = append(encs, e)
+		}
+		r, err := oneUpdate(ctx, t, cred, pf32, append(encs, encRaw))
+		switch {
+		case r.unknown != 0:
+			fmt.Printf("- %d–%d: answered with %d (0x%X), not decodable here\n", a, encs[len(encs)-1], r.unknown, r.unknown)
+		case err != nil:
+			fmt.Printf("- %d–%d: %v\n", a, encs[len(encs)-1], err)
+		default:
+			fmt.Printf("- %d–%d: %s\n", a, encs[len(encs)-1], r.used)
+		}
+	}
+}
+
+// dump asks for enc alone (then Raw) and one whole-screen update, and prints the update's header, the first
+// rectangle's header and the bytes after it, with how many came in all within wait: for an encoding this tool cannot
+// read (Apple's own), to see what it is.
+func dump(ctx context.Context, t target, cred credentials, enc int32, n int, wait time.Duration, out string) error {
+	encs := []int32{enc, encRaw}
+	c, err := connect(ctx, t, cred, pf32, encs, nil)
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	if err := c.Request(false, c.Whole()); err != nil {
+		return err
+	}
+	_ = c.conn.SetReadDeadline(time.Now().Add(wait))
+	var all []byte
+	buf := make([]byte, 64<<10)
+	for {
+		k, err := c.r.Read(buf)
+		all = append(all, buf[:k]...)
+		if err != nil {
+			break
+		}
+	}
+	fmt.Printf("encoding %d: %d bytes in %s\n", enc, len(all), wait)
+	if out != "" {
+		if err := os.WriteFile(out, all, 0o600); err != nil {
+			return err
+		}
+	}
+	if len(all) >= 16 {
+		fmt.Printf("update: type %d, %d rectangles\n", all[0], binary.BigEndian.Uint16(all[2:]))
+		h := all[4:16]
+		fmt.Printf("rect: %d,%d %d×%d encoding %d\n", binary.BigEndian.Uint16(h[0:]), binary.BigEndian.Uint16(h[2:]),
+			binary.BigEndian.Uint16(h[4:]), binary.BigEndian.Uint16(h[6:]), int32(binary.BigEndian.Uint32(h[8:])))
+		body := all[16:]
+		fmt.Printf("%s", hex.Dump(body[:min(n, len(body))]))
 	}
 	return nil
 }

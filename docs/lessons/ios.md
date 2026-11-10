@@ -1570,3 +1570,12 @@ A worktree's display name and its Agents' conversation names are different comma
   `FleetIntentsTests.sayingYesNeedsUnlock`). The policy covers the whole intent, so its other replies wait for the unlock too.
   Ask Claude and Give an Agent a Task still send messages from a locked phone; changing that is a separate decision.
 - An entry that never shows the plan in full approves plans in `acceptEdits`, never `bypassPermissions`.
+
+## A queue drained through a continuation must end on cancellation (2026-11-10, #3067)
+
+- `RFBClient` runs its reader and its sender in one `withThrowingTaskGroup`. When the reader throws (the Mac hangs up),
+  leaving the group still waits for the sender. An `AsyncStream` iterator returns nil on cancellation, so the old
+  sender ended; a hand-written queue whose `next()` parks a `CheckedContinuation` does not, and the client never
+  reported the end (found by replaying a recording that ran out). `RFBOutbox.next()` wraps the wait in
+  `withTaskCancellationHandler` and resumes the parked continuation with nil, with a flag for a cancel that comes
+  before the continuation is stored (`RFBFrameTests.outboxHandsOverInOrderAndEndsOnFinishOrCancel`).

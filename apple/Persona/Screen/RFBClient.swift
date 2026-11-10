@@ -190,8 +190,10 @@ nonisolated final class RFBClient: @unchecked Sendable {
     private let reader: RFBReader
     private let credentials: @Sendable () async -> Credentials?
     private(set) var framebuffer = RFBFramebuffer(width: 1, height: 1)
-    /// The server pushes updates without being asked (ContinuousUpdates, once it said EndOfContinuousUpdates).
-    private var continuous = false
+    /// The part of the framebuffer updates are asked for (nil: all of it): what the views show (#3067). areaLock
+    /// guards it (set from the views, read where requests are made).
+    private let areaLock = NSLock()
+    private var area: CGRect?
     /// Held while an update writes the framebuffer: whoever copies it out takes it too (withFramebuffer).
     private let framebufferLock = NSLock()
 
@@ -209,7 +211,6 @@ nonisolated final class RFBClient: @unchecked Sendable {
     /// What changed since withDamage last took it; framebufferLock guards it.
     private var damage = RFBRegion()
     private let zrle = RFBZRLE()
-    private let tight = RFBTight()
     private var task: Task<Void, Never>?
     /// The pointer, keys and clipboard, sent one after another in the order they came (from the handshake's end on).
     let outbox = RFBOutbox()
@@ -281,11 +282,33 @@ nonisolated final class RFBClient: @unchecked Sendable {
         send([6, 0, 0, 0] + RFBAuth.be32(UInt32(bytes.count)) + bytes)
     }
 
-    /// Asks for the whole screen again (a non-incremental update): the Mac answers even when nothing changed, so a
+    /// Asks for what is shown again whole (a non-incremental update): the Mac answers even when nothing changed, so a
     /// connection that went away without saying so shows up as no frame (#4380).
-    func refresh() {
-        let (w, h) = withFramebuffer { (UInt16($0.width), UInt16($0.height)) }
-        send([3, 0, 0, 0, 0, 0, UInt8(w >> 8), UInt8(w & 0xff), UInt8(h >> 8), UInt8(h & 0xff)])
+    func refresh() { send(requestBytes(incremental: false)) }
+
+    /// Updates from now on for this part of the framebuffer only (nil: all of it), as the views show it (#3067):
+    /// zoomed in, or one display of several, the rest of the screen is not sent. macOS's Screen Sharing keeps track
+    /// of what changed outside the part asked for and sends it once that part is asked for again, so a part that
+    /// comes into view needs no whole request: an incremental one for the new part goes out at once.
+    func ask(for r: CGRect?) {
+        let grew: Bool = areaLock.withLock {
+            let old = area
+            area = r
+            guard let r else { return old != nil }
+            guard let old else { return false }
+            return !old.contains(r)
+        }
+        if grew { send(requestBytes(incremental: true)) }
+    }
+
+    /// A FramebufferUpdateRequest for the part asked for, on the framebuffer as it is now.
+    private func requestBytes(incremental: Bool) -> [UInt8] {
+        let (w, h) = withFramebuffer { ($0.width, $0.height) }
+        let whole = CGRect(x: 0, y: 0, width: w, height: h)
+        var r = (areaLock.withLock { area } ?? whole).integral.intersection(whole)
+        if r.isNull || r.isEmpty { r = whole }
+        func be16(_ v: CGFloat) -> [UInt8] { let n = UInt16(clamping: Int(v)); return [UInt8(n >> 8), UInt8(n & 0xff)] }
+        return [3, incremental ? 1 : 0] + be16(r.minX) + be16(r.minY) + be16(r.width) + be16(r.height)
     }
 
     private func send(_ bytes: [UInt8]) { outbox.send(bytes) }
@@ -323,7 +346,8 @@ nonisolated final class RFBClient: @unchecked Sendable {
         for e in Self.encodings { setEncodings += RFBAuth.be32(UInt32(bitPattern: e)) }
         try await transport.send(setEncodings)
         onState(.live(width: width, height: height, name: name))
-        try await request(incremental: false)
+        // The whole screen first, whatever is shown: what isn't asked for stays black until it is.
+        try await transport.send([3, 0, 0, 0, 0, 0, UInt8(width >> 8), UInt8(width & 0xff), UInt8(height >> 8), UInt8(height & 0xff)])
     }
 
     private func sign() async throws -> Credentials {
@@ -361,8 +385,7 @@ nonisolated final class RFBClient: @unchecked Sendable {
     }
 
     private func request(incremental: Bool) async throws {
-        let w = UInt16(framebuffer.width), h = UInt16(framebuffer.height)
-        try await transport.send([3, incremental ? 1 : 0, 0, 0, 0, 0, UInt8(w >> 8), UInt8(w & 0xff), UInt8(h >> 8), UInt8(h & 0xff)])
+        try await transport.send(requestBytes(incremental: incremental))
     }
 
     private func run() async throws {
@@ -379,8 +402,8 @@ nonisolated final class RFBClient: @unchecked Sendable {
                 let n = Int(try await reader.u32())
                 let text = try await reader.bytes(n)
                 onCutText(String(text.map { Character(Unicode.Scalar($0)) }))
-            case 150: // EndOfContinuousUpdates: the server can push updates (asked with -313)
-                continuous = true
+            case 150: // EndOfContinuousUpdates (a server's answer to -313, which this client does not ask for)
+                break
             case 248: // Fence (asked with -312): a request is answered with the flags understood (none) and its data
                 _ = try await reader.bytes(3)
                 let flags = try await reader.u32()
@@ -391,30 +414,43 @@ nonisolated final class RFBClient: @unchecked Sendable {
         }
     }
 
+    /// The largest update whose follower is asked for before it is read (#3067): well inside the Mac's socket buffer.
+    /// macOS's Screen Sharing sends one rectangle an update; a request that reaches it while it is still writing a
+    /// bigger one makes it go quiet for up to two seconds, so the follower of a big update is asked for once it is in.
+    static let earlyLimit = 64 << 10
+
     private func update() async throws {
         _ = try await reader.bytes(1)
         let count = try await reader.u16()
-        // The next update asked for now, before this one is read and drawn: the Mac gathers it meanwhile, instead of
-        // waiting for this one to cross the network, be drawn and the request to cross back.
         let size = (framebuffer.width, framebuffer.height)
-        try await request(incremental: true)
+        var asked = false
+        /// The next update asked for now, before this one's data is read and drawn, when it is one small rectangle:
+        /// the Mac gathers the next one meanwhile instead of waiting for this one to cross the network, be drawn and
+        /// the request to cross back.
+        func askEarly(_ bytes: Int, _ index: Int) async throws {
+            guard !asked, index == 0, count == 1, bytes <= Self.earlyLimit else { return }
+            asked = true
+            try await request(incremental: true)
+        }
         var dirty = CGRect.null
-        for _ in 0..<count {
+        for index in 0..<count {
             let x = try await reader.u16(), y = try await reader.u16(), w = try await reader.u16(), h = try await reader.u16()
             let encoding = try await reader.s32()
             switch encoding {
             case 0:
+                try await askEarly(w * h * 4, index)
                 let data = try await reader.bytes(w * h * 4)
                 framebufferLock.withLock { data.withUnsafeBytes { framebuffer.raw(x: x, y: y, w: w, h: h, $0) } }
             case 1:
+                try await askEarly(4, index)
                 let sx = try await reader.u16(), sy = try await reader.u16()
                 framebufferLock.withLock { framebuffer.copy(x: x, y: y, w: w, h: h, from: sx, sy) }
             case 16:
-                let compressed = try await reader.bytes(Int(try await reader.u32()))
+                let length = Int(try await reader.u32())
+                try await askEarly(length, index)
+                let compressed = try await reader.bytes(length)
                 let tiles = try zrle.inflate(compressed)
                 try framebufferLock.withLock { try zrle.draw(tiles, x: x, y: y, w: w, h: h, into: framebuffer) }
-            case 7:
-                try await tightRect(x: x, y: y, w: w, h: h)
             case -223:
                 resize(width: w, height: h)
                 onResize(w, h)
@@ -447,8 +483,13 @@ nonisolated final class RFBClient: @unchecked Sendable {
             framebufferLock.withLock { damage.add(r) }
         }
         if !dirty.isNull { onFrame(framebuffer, dirty) }
-        // A new size since the request went out: that one covers the old size only, so the whole new one again.
-        if size != (framebuffer.width, framebuffer.height) { try await request(incremental: false) }
+        if size != (framebuffer.width, framebuffer.height) {
+            // A new size: the whole new screen.
+            let w = framebuffer.width, h = framebuffer.height
+            try await transport.send([3, 0, 0, 0, 0, 0, UInt8(w >> 8), UInt8(w & 0xff), UInt8(h >> 8), UInt8(h & 0xff)])
+        } else if !asked {
+            try await request(incremental: true)
+        }
     }
 
     private func resize(width: Int, height: Int) {
@@ -456,42 +497,6 @@ nonisolated final class RFBClient: @unchecked Sendable {
             framebuffer.resize(width: width, height: height)
             damage = RFBRegion(CGRect(x: 0, y: 0, width: width, height: height))
         }
-    }
-
-    /// Tight (7): the compression control byte, then a fill colour, a JPEG, or a filter's data (under 12 bytes as it
-    /// is, else compressed on the stream the byte names).
-    private func tightRect(x: Int, y: Int, w: Int, h: Int) async throws {
-        let control = try await reader.u8()
-        tight.reset(control)
-        switch control >> 4 {
-        case 8:
-            let c = try await reader.bytes(3)
-            guard x + w <= framebuffer.width, y + h <= framebuffer.height else { throw RFBTight.Failure.rect }
-            framebufferLock.withLock { framebuffer.fill(x: x, y: y, w: w, h: h, b: c[2], g: c[1], r: c[0]) }
-        case 9:
-            let data = try await reader.bytes(try await compactLength())
-            try framebufferLock.withLock { try RFBTight.jpeg(data, x: x, y: y, w: w, h: h, into: framebuffer) }
-        case let basic where basic < 8:
-            let filter: UInt8 = basic & 4 != 0 ? try await reader.u8() : 0
-            var palette: [UInt8] = []
-            if filter == 1 { palette = try await reader.bytes((Int(try await reader.u8()) + 1) * 3) }
-            let size = RFBTight.size(filter: filter, colours: palette.count / 3, w: w, h: h)
-            let data = size < 12 ? try await reader.bytes(size)
-                : try tight.inflate(try await reader.bytes(try await compactLength()), stream: Int(basic & 3))
-            try framebufferLock.withLock { try RFBTight.draw(filter: filter, data, palette: palette, x: x, y: y, w: w, h: h, into: framebuffer) }
-        case let other:
-            _ = other
-            throw Failure.protocolError(String(localized: "Unknown encoding \(Int32(7))"))
-        }
-    }
-
-    /// Tight's length: 7 bits a byte, low first, up to three bytes (the third all 8).
-    private func compactLength() async throws -> Int {
-        let a = Int(try await reader.u8())
-        if a & 0x80 == 0 { return a }
-        let b = Int(try await reader.u8())
-        if b & 0x80 == 0 { return a & 0x7f | b << 7 }
-        return a & 0x7f | (b & 0x7f) << 7 | Int(try await reader.u8()) << 14
     }
 
     /// ExtendedDesktopSize's screens: a count, three bytes of padding, then id, x, y, width, height and flags for each.

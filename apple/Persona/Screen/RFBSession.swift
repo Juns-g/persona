@@ -93,6 +93,7 @@ import SwiftUI
             }
         }
         client = c
+        c.ask(for: shownPart)
         phase = .connecting
         pictured = false
         lastFrame = nil
@@ -110,9 +111,48 @@ import SwiftUI
         if case .closed = phase {} else { phase = .closed(nil) }
     }
 
-    /// Shown in this layer from now on (until it goes).
-    func show(in layer: AVSampleBufferDisplayLayer, timed: Bool = false) { sink.add(layer, timed: timed) }
-    func hide(from layer: AVSampleBufferDisplayLayer) { sink.remove(layer) }
+    /// Shown in this layer from now on (until it goes), all of the framebuffer until `shows` says otherwise.
+    func show(in layer: AVSampleBufferDisplayLayer, timed: Bool = false) {
+        sink.add(layer, timed: timed)
+        shown[ObjectIdentifier(layer)] = .whole
+        askForShown()
+    }
+
+    func hide(from layer: AVSampleBufferDisplayLayer) {
+        sink.remove(layer)
+        shown[ObjectIdentifier(layer)] = nil
+        askForShown()
+    }
+
+    /// The part of the framebuffer this layer's view shows now, in pixels (nil: all of it): zoomed in, or one display
+    /// of several (#3067). Updates are asked for what any layer shows, a little more around it.
+    func shows(_ part: CGRect?, in layer: AVSampleBufferDisplayLayer) {
+        let now: Shown = part.map { .part($0) } ?? .whole
+        guard shown[ObjectIdentifier(layer)] != now else { return }
+        shown[ObjectIdentifier(layer)] = now
+        askForShown()
+    }
+
+    /// What each layer shows; nothing shown: all of it (a connection kept for a moment between two holders).
+    private enum Shown: Equatable { case whole, part(CGRect) }
+    @ObservationIgnored private var shown: [ObjectIdentifier: Shown] = [:]
+    /// Pixels asked for around what is shown: a pan or a zoom out finds them there at once.
+    nonisolated static let margin: CGFloat = 64
+
+    /// The part of the framebuffer the layers show together (nil: all of it).
+    var shownPart: CGRect? {
+        var union = CGRect.null
+        for s in shown.values {
+            guard case .part(let r) = s else { return nil }
+            union = union.union(r)
+        }
+        guard !union.isNull, size.width > 0 else { return nil }
+        let whole = CGRect(origin: .zero, size: size)
+        let padded = union.insetBy(dx: -Self.margin, dy: -Self.margin).integral.intersection(whole)
+        return padded == whole ? nil : padded
+    }
+
+    private func askForShown() { client?.ask(for: shownPart) }
 
     // MARK: Signing in
 
@@ -191,6 +231,7 @@ import SwiftUI
     private func resized(width: Int, height: Int) {
         size = CGSize(width: width, height: height)
         pointer = Self.clamped(pointer, to: size)
+        askForShown()
     }
 
     // MARK: Pointer, keys, clipboard

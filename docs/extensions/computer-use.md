@@ -278,10 +278,18 @@ Picture in Picture (`AVSampleBufferDisplayLayer`) needs access to each frame, wh
 - **Frames** (`RFBFramebuffer`):
   - Requests 32-bit, depth 24, little-endian pixels with red at bit 16; BGRA in memory, directly usable as `CVPixelBuffer` 32BGRA.
   - Encoding preference: ZRLE (16), CopyRect (1), Raw (0), plus DesktopSize, ExtendedDesktopSize, Cursor and LastRect pseudo-encodings.
+  - What macOS's Screen Sharing really does (macOS 26.6, `vncbench probe`, #3067): of the standard encodings only ZRLE,
+    Zlib and Raw (ZRLE whatever the order asked; no Tight, JPEG, Hextile or H.264), and none of the pseudo-encodings:
+    no Cursor (it draws the pointer into the framebuffer), no ContinuousUpdates or Fence, no ExtendedDesktopSize. It
+    takes a 16-bit pixel format (ZRLE then sends about 43% of the bytes, no longer lossless). Its own encodings are
+    1000 (1-bit), 1001 (4-bit grey), 1002 (16-bit colour through zlib, larger than ZRLE at 16 bits) and 1011, a
+    DCT codec of its own (a tenth of ZRLE's bytes) whose entropy coding is undocumented; 1101, 1107, 1109 and 1110 carry
+    the display layout, formats, the keyboard layout and the model. Asked for 100 or more encodings at once it answers
+    nothing. So lossless ZRLE is the most a standard client gets; fewer bytes come from asking for less (below).
   - One zlib stream for ZRLE over the whole connection, using Compression raw DEFLATE after skipping the two-byte zlib header (`RFBInflater`).
   - All five ZRLE tile types: raw, solid, packed palette, plain RLE, palette RLE, written into the framebuffer a row at a time (#3067).
-  - Tight (`RFBTight`, #3067): fill, JPEG (ImageIO, drawn straight into the framebuffer), and the copy, palette and gradient filters on four zlib streams with their reset bits.
-  - The next incremental FramebufferUpdateRequest goes out as soon as an update's header is read, before its rectangles: the server gathers the next update while this one crosses the network and is drawn (#3067). After a size change mid-update, a whole-screen request for the new size follows.
+  - When an update is one small rectangle (its bytes, known from its header, at most `RFBClient.earlyLimit`, 64 KB), the next incremental FramebufferUpdateRequest goes out before its data is read: the server gathers the next update while this one crosses the network and is drawn (#3067; typing over a 50 ms, 30 Mbit/s link: p50 latency 629 → 431 ms). A bigger update's follower is asked for once it is in, as before: a request that reaches macOS's server while it is still writing a big update makes it go quiet for up to two seconds (measured: video at 1.8 frames a second instead of 5.3 when every request went out early). After a size change mid-update, a whole-screen request for the new size follows.
+  - Requests are for the part of the framebuffer shown, 64 pixels around it (`RFBClient.ask(for:)`, `RFBSession.shows`, #3067): zoomed in, or one display of several, the rest is not sent. A layer that shows all of it (the small window, the Mac app) means all of it. macOS keeps track of what changed outside the part asked for and sends it with the first incremental request that covers it again (measured: SSIM 1 against a lossless copy), so a part coming into view is asked for at once, incrementally, not whole.
   - Fence (248) requests are answered (no flags, same data); EndOfContinuousUpdates (150) is taken.
 - **Showing frames** (`RFBFrameSink`, #3067): at most 60 a second, into IOSurface-backed pixel buffers from a pool. Each buffer the pool has handed out keeps the region that changed since it was last filled (by its IOSurface id; the client's damage comes with the framebuffer, `RFBClient.withDamage`), and a frame copies only that region: a new buffer, or one the pool let go and handed out again, is filled whole. The page's fps / latency numbers are reported at most four times a second, so the page doesn't redraw for every frame.
 - **Sending back**: pointer (button bits: left, middle, right, wheel up/down), keys (keysym), clipboard (ClientCutText; RFB only carries Latin-1, other characters go through the node, see "Clipboard" below).
@@ -296,7 +304,7 @@ Picture in Picture (`AVSampleBufferDisplayLayer`) needs access to each frame, wh
     - complete scripted session, outgoing bytes checked byte for byte;
     - ARD handshake and rejected login;
     - pointer, key and clipboard bytes and order (pre-handshake messages after handshake; 120 messages in original order).
-  - `RFBFrameTests` (#3067): region merging, the outbox folding motion but not presses, releases or notches and ending on cancel, the frame sink copying only what changed with every pixel matching the framebuffer, the next request going out before an update's rectangles are read, Fence and EndOfContinuousUpdates, and Tight against Python's zlib and Go's JPEG.
+  - `RFBFrameTests` (#3067): region merging, the outbox folding motion but not presses, releases or notches and ending on cancel, the frame sink copying only what changed with every pixel matching the framebuffer, the next request going out before a small update's data is read and after a big one's, Fence and EndOfContinuousUpdates, requests carrying the part shown (the view's on-screen part, a part that grows asked for at once, the session's union with its margin).
   - Mock `MOCK_SCREEN=fake` now offers ARD first like macOS (DH in Python, AES with openssl), then ZRLE or Raw as the client requests. It records pointer, clicks, wheel and clipboard (read at `/mock/screen-password`; `?clip=…` sends clipboard to the client). `MOCK_SCREEN_ANIMATE=1` moves a square at about 30 frames per second to measure frame rate.
 
 ### Measuring (#3067)

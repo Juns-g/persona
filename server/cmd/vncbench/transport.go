@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"os/user"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -218,11 +219,27 @@ func loadCredentials() (credentials, error) {
 		return credentials{acct, p}, nil
 	}
 	out, err := exec.Command("security", "find-generic-password", "-s", "persona-vnc-bench", "-a", acct, "-w").Output()
-	if err != nil {
-		return credentials{}, errors.New("no sign-in: set VNCBENCH_PASSWORD, or add it to the keychain with " +
-			`security add-generic-password -s persona-vnc-bench -a "$(id -un)" -w`)
+	if err == nil {
+		return credentials{acct, strings.TrimRight(string(out), "\n")}, nil
 	}
-	return credentials{acct, strings.TrimRight(string(out), "\n")}, nil
+	// A session outside the login one (ssh, an agent's) cannot open the login keychain: a file only the user reads.
+	file := os.Getenv("VNCBENCH_PASSWORD_FILE")
+	if file == "" {
+		if home, herr := os.UserHomeDir(); herr == nil {
+			file = filepath.Join(home, ".config", "persona", "vnc-bench-password")
+		}
+	}
+	if fi, ferr := os.Stat(file); ferr == nil {
+		if fi.Mode().Perm()&0o077 != 0 {
+			return credentials{}, fmt.Errorf("%s is readable by others: chmod 600 it", file)
+		}
+		b, rerr := os.ReadFile(file)
+		if rerr == nil && len(b) > 0 {
+			return credentials{acct, strings.TrimRight(string(b), "\r\n")}, nil
+		}
+	}
+	return credentials{}, errors.New("no sign-in: set VNCBENCH_PASSWORD, add it to the keychain with " +
+		`security add-generic-password -s persona-vnc-bench -a "$(id -un)" -w` + ", or write it to " + file + " (0600)")
 }
 
 // connect dials t, signs in and asks for pf and encs.

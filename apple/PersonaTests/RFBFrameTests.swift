@@ -1,3 +1,4 @@
+import AVFoundation
 import CoreGraphics
 import CoreVideo
 import Foundation
@@ -5,7 +6,8 @@ import Testing
 @testable import Persona
 
 /// The live screen's cheaper paths (#3067): the damage a frame copies (RFBRegion), the frame sink copying only that
-/// into the buffers it reuses, the outbox folding pointer motion, and the next update asked for as an update starts.
+/// into the buffers it reuses, the outbox folding pointer motion, the next update asked for as an update starts, and
+/// updates asked for only for the part shown.
 struct RFBFrameTests {
     // MARK: RFBRegion
 
@@ -127,15 +129,15 @@ struct RFBFrameTests {
         client.close()
     }
 
-    /// The next incremental request goes out as soon as an update's header is in, before its rectangles: the
-    /// transport holds the rectangle back until it has seen that request.
-    @Test func nextUpdateIsAskedBeforeThisOneIsRead() async throws {
+    /// The follower of a small update is asked for as soon as its size is known, before its data: the transport
+    /// holds the data back until it has seen that request.
+    @Test func nextUpdateIsAskedBeforeASmallOneIsRead() async throws {
         var script = Self.greeting(8, 8)
         let update = Self.raw(0, 0, 8, 8, [1, 2, 3, 0])
-        script.append(Array(update.prefix(4))) // the header alone
-        script.append(Array(update.dropFirst(4)))
+        script.append(Array(update.prefix(4 + 12))) // the update's header and its rectangle's
+        script.append(Array(update.dropFirst(4 + 12)))
         let t = PacedTransport(script, every: .milliseconds(5)) { sent, next in
-            // The rectangle (the script's sixth part) only once an incremental request followed the whole-screen one.
+            // The data (the script's sixth part) only once an incremental request followed the whole-screen one.
             next < 5 || sent.contains { $0.count == 10 && $0[0] == 3 && $0[1] == 1 }
         }
         let client = RFBClient(transport: t) { nil }
@@ -143,7 +145,27 @@ struct RFBFrameTests {
         client.onFrame = { _, _ in frames.add() }
         client.start()
         for _ in 0..<200 where frames.n == 0 { try await Task.sleep(for: .milliseconds(10)) }
-        #expect(frames.n == 1, "the update was drawn: its request went out before it was read")
+        #expect(frames.n == 1, "the update was drawn: its follower was asked for before its data was read")
+        client.close()
+    }
+
+    /// A big update's follower is asked for once it is in (#3067: macOS goes quiet for seconds when a request reaches
+    /// it while it is still writing a big update).
+    @Test func nextUpdateIsAskedAfterABigOneIsRead() async throws {
+        var script = Self.greeting(200, 100)
+        let update = Self.raw(0, 0, 200, 100, [1, 2, 3, 0]) // 80 000 bytes, past earlyLimit
+        script.append(Array(update.prefix(4 + 12)))
+        script.append(Array(update.dropFirst(4 + 12)))
+        let t = PacedTransport(script, every: .milliseconds(20), holds: true)
+        let client = RFBClient(transport: t) { nil }
+        let frames = Counter()
+        client.onFrame = { _, _ in frames.add() }
+        client.start()
+        for _ in 0..<200 where frames.n == 0 { try await Task.sleep(for: .milliseconds(10)) }
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(frames.n == 1)
+        let incremental = t.events.firstIndex { $0 == "sent 3/1" }, data = t.events.firstIndex { $0 == "said 5" }
+        #expect(incremental != nil && data != nil && incremental! > data!, "asked for after the data: \(t.events)")
         client.close()
     }
 
@@ -165,44 +187,67 @@ struct RFBFrameTests {
         client.close()
     }
 
-    // MARK: Tight
+    // MARK: Asking for what is shown
 
-    /// Tight (#3067) as Python's zlib (sync-flushed, as servers do) and Go's JPEG made it: a fill, a two-colour and a
-    /// four-colour palette on one stream, copy compressed and as it is, gradient, a JPEG, and a stream started again.
-    @Test func tightDrawsWhatWasEncoded() async throws {
-        let update = [UInt8](Data(base64Encoded: "AAAACAAAAAAACgAKAAAAB4DIZDIACgAAABAACAAAAAdQAQEAAAD///8PeJz6z8Dw/z8SBgAAAP//ABoAAAAGAAYAAAAHUAED/wAAAP8AAAD///8AFmJgZGJmYAQTTGCCGUwwIIsDAAAA//8AAAAKAAgABAAAAAcAQXicBMFBAQAwDAIxfudiSlBSJSipEpRU0RKJJyxGRKyoOCHzjM2YmDU1ZxRecJiQsKHhgsorLlNStrRc+QAAAP//AAgACgADAAEAAAAHAAECAwQFBgcICQAMAAoACAAEAAAAB2ACEXic4uLiYsEGGKgEAAAAAP//ABgACAAQAAwAAAAHkNgE/9j/2wCEAAIBAQEBAQIBAQECAgICAgQDAgICAgUEBAMEBgUGBgYFBgYGBwkIBgcJBwYGCAsICQoKCgoKBggLDAsKDAkKCgoBAgICAgICBQMDBQoHBgcKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCv/AABEIAAwAEAMBIgACEQEDEQH/xAGiAAABBQEBAQEBAQAAAAAAAAAAAQIDBAUGBwgJCgsQAAIBAwMCBAMFBQQEAAABfQECAwAEEQUSITFBBhNRYQcicRQygZGhCCNCscEVUtHwJDNicoIJChYXGBkaJSYnKCkqNDU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6g4SFhoeIiYqSk5SVlpeYmZqio6Slpqeoqaqys7S1tre4ubrCw8TFxsfIycrS09TV1tfY2drh4uPk5ebn6Onq8fLz9PX29/j5+gEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoLEQACAQIEBAMEBwUEBAABAncAAQIDEQQFITEGEkFRB2FxEyIygQgUQpGhscEJIzNS8BVictEKFiQ04SXxFxgZGiYnKCkqNTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqCg4SFhoeIiYqSk5SVlpeYmZqio6Slpqeoqaqys7S1tre4ubrCw8TFxsfIycrS09TV1tfY2dri4+Tl5ufo6ery8/T19vf4+fr/2gAMAwEAAhEDEQA/ALlFFFf2Qf59n//ZAAAAEAAEAAQAAAAHAQ54nOJMPs5JCgIAAAD//w==")!)
-        let t = PacedTransport(Self.greeting(40, 20) + [update], every: .milliseconds(5))
+    @Test func viewportSaysWhatIsOnScreen() {
+        let fitted = VNCViewport(visible: CGRect(x: 0, y: 0, width: 1920, height: 1080), rect: CGRect(x: 0, y: 100, width: 400, height: 225))
+        #expect(fitted.onScreen(CGRect(x: 0, y: 0, width: 400, height: 800)) == CGRect(x: 0, y: 0, width: 1920, height: 1080))
+        // Zoomed in twice over the view's middle: the middle half of each side.
+        let zoomed = VNCViewport(visible: CGRect(x: 0, y: 0, width: 1920, height: 1080), rect: CGRect(x: -200, y: -112.5, width: 800, height: 450))
+        #expect(zoomed.onScreen(CGRect(x: 0, y: 0, width: 400, height: 225)) == CGRect(x: 480, y: 270, width: 960, height: 540))
+        // One display of two: never past it.
+        let one = VNCViewport(visible: CGRect(x: 1920, y: 0, width: 1920, height: 1080), rect: CGRect(x: 0, y: 0, width: 400, height: 225))
+        #expect(one.onScreen(CGRect(x: 0, y: 0, width: 400, height: 225)) == CGRect(x: 1920, y: 0, width: 1920, height: 1080))
+    }
+
+    /// Requests carry the part asked for; a part that grows is asked for at once (incrementally: the server sends what
+    /// changed there meanwhile), and back to all of it the same way.
+    @Test func requestsCarryThePartShown() async throws {
+        let t = PacedTransport(Self.greeting(100, 50) + [Self.raw(0, 0, 1, 1, [1, 2, 3, 0])], every: .milliseconds(5), holds: true)
         let client = RFBClient(transport: t) { nil }
-        let seen = Pixels()
-        client.onFrame = { fb, _ in
-            var p: [String: [UInt8]] = [:]
-            for (x, y) in [(5, 5), (10, 0), (18, 0), (10, 1), (18, 1), (26, 0), (27, 0), (26, 1), (28, 0), (29, 0), (3, 11),
-                           (10, 10), (12, 10), (19, 13), (30, 14), (1, 17)] { p["\(x),\(y)"] = fb.pixel(x, y) }
-            seen.set(p)
-        }
+        let frames = Counter()
+        client.onFrame = { _, _ in frames.add() }
         client.start()
-        for _ in 0..<200 where seen.get.isEmpty { try await Task.sleep(for: .milliseconds(10)) }
-        let p = seen.get
-        #expect(p["5,5"] == [50, 100, 200, 255], "fill, R G B on the wire")
-        #expect(p["10,0"] == [255, 255, 255, 255] && p["18,0"] == [0, 0, 0, 255], "two colours, a bit a pixel")
-        #expect(p["10,1"] == [0, 0, 0, 255] && p["18,1"] == [255, 255, 255, 255], "the next row")
-        #expect(p["26,0"] == [0, 0, 255, 255] && p["27,0"] == [0, 255, 0, 255] && p["26,1"] == [0, 255, 0, 255], "four colours, same stream")
-        #expect(p["28,0"] == [255, 0, 0, 255] && p["29,0"] == [0, 255, 255, 255])
-        #expect(p["3,11"] == [7, 60, 90, 255], "copy, compressed")
-        #expect(p["10,10"] == [9, 8, 7, 255], "copy, under 12 bytes")
-        #expect(p["12,10"] == [10, 10, 10, 255] && p["19,13"] == [38, 38, 38, 255], "gradient")
-        let jpeg = try #require(p["30,14"])
-        #expect(abs(Int(jpeg[0]) - 220) <= 6 && abs(Int(jpeg[1]) - 160) <= 6 && abs(Int(jpeg[2]) - 40) <= 6, "JPEG: \(jpeg)")
-        #expect(p["1,17"] == [199, 99, 9, 255], "a stream started again")
+        for _ in 0..<200 where frames.n == 0 { try await Task.sleep(for: .milliseconds(10)) }
+        func req(_ inc: UInt8, _ x: Int, _ y: Int, _ w: Int, _ h: Int) -> [UInt8] { [3, inc] + Self.u16(x) + Self.u16(y) + Self.u16(w) + Self.u16(h) }
+        #expect(t.sent.contains(req(0, 0, 0, 100, 50)), "the whole screen first")
+        let before = t.sent.count
+        client.ask(for: CGRect(x: 10, y: 5, width: 20, height: 10)) // smaller: nothing at once
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(t.sent.count == before)
+        client.ask(for: CGRect(x: 10, y: 5, width: 40, height: 20)) // grew: asked for now
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(t.sent.last == req(1, 10, 5, 40, 20))
+        client.ask(for: nil)
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(t.sent.last == req(1, 0, 0, 100, 50), "all of it again")
+        client.refresh()
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(t.sent.last == req(0, 0, 0, 100, 50))
         client.close()
     }
-}
 
-nonisolated private final class Pixels: @unchecked Sendable {
-    private let lock = NSLock()
-    private var seen: [String: [UInt8]] = [:]
-    var get: [String: [UInt8]] { lock.withLock { seen } }
-    func set(_ p: [String: [UInt8]]) { lock.withLock { seen = p } }
+    /// The session asks for what its layers show together, with a margin; a layer showing all of it (the small
+    /// window's) means all of it.
+    @MainActor @Test func sessionAsksForWhatItsLayersShow() async throws {
+        let t = PacedTransport(Self.greeting(1000, 500), every: .milliseconds(5), holds: true)
+        let session = RFBSession(ref: MachineRef(id: "mac"))
+        defer { session.close() }
+        session.run(RFBClient(transport: t) { nil })
+        for _ in 0..<300 where session.phase != .live { try await Task.sleep(for: .milliseconds(10)) }
+        let page = AVSampleBufferDisplayLayer(), small = AVSampleBufferDisplayLayer()
+        session.show(in: page)
+        #expect(session.shownPart == nil)
+        session.shows(CGRect(x: 100, y: 100, width: 200, height: 100), in: page)
+        let m = RFBSession.margin
+        #expect(session.shownPart == CGRect(x: 100 - m, y: 100 - m, width: 200 + 2 * m, height: 100 + 2 * m))
+        session.show(in: small, timed: true)
+        #expect(session.shownPart == nil, "the small window shows all of it")
+        session.hide(from: small)
+        #expect(session.shownPart != nil)
+        session.shows(nil, in: page)
+        #expect(session.shownPart == nil)
+    }
 }
 
 nonisolated private final class Counter: @unchecked Sendable {
@@ -224,22 +269,37 @@ nonisolated private final class PacedTransport: RFBTransport, @unchecked Sendabl
     var sent: [[UInt8]] { lock.withLock { _sent } }
     var done: Bool { lock.withLock { at >= script.count } }
 
-    init(_ script: [[UInt8]], every: Duration, gate: @escaping @Sendable ([[UInt8]], Int) -> Bool = { _, _ in true }) {
+    /// holds: once the script is said, it stays open (and quiet) instead of closing.
+    private let holds: Bool
+
+    init(_ script: [[UInt8]], every: Duration, holds: Bool = false, gate: @escaping @Sendable ([[UInt8]], Int) -> Bool = { _, _ in true }) {
         self.script = script
         self.every = every
+        self.holds = holds
         self.gate = gate
     }
 
-    func send(_ bytes: [UInt8]) async throws { lock.withLock { _sent.append(bytes) } }
+    func send(_ bytes: [UInt8]) async throws {
+        lock.withLock {
+            _sent.append(bytes)
+            _events.append(bytes.count == 10 && bytes[0] == 3 ? "sent 3/\(bytes[1])" : "sent \(bytes.first ?? 0)")
+        }
+    }
+
+    /// What was said and sent, in order: "said <part>", "sent <message type>" ("sent 3/<incremental>" for requests).
+    private var _events: [String] = []
+    var events: [String] { lock.withLock { _events } }
 
     func receive() async throws -> [UInt8] {
         try await Task.sleep(for: every)
+        while holds, lock.withLock({ at >= script.count }) { try await Task.sleep(for: .milliseconds(20)) }
         for _ in 0..<100 where !lock.withLock({ gate(_sent, at) }) { try await Task.sleep(for: .milliseconds(10)) }
         // Still shut after a second: the client never sent what the gate waits for, and the server hangs up.
         guard lock.withLock({ gate(_sent, at) }) else { throw URLError(.timedOut) }
         return try lock.withLock {
             guard at < script.count else { throw URLError(.networkConnectionLost) }
             defer { at += 1 }
+            _events.append("said \(at)")
             return script[at]
         }
     }

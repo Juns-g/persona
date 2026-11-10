@@ -29,17 +29,19 @@ type runFlags struct {
 	jsonOut *string
 	record  *string
 	browser *string
+	area    *string
 }
 
 func (r *runFlags) register(fs *flag.FlagSet) {
 	r.scenes = fs.String("scenes", "all", "comma-separated: idle,type,scroll,drag,video (all: every one)")
 	r.config = fs.String("config", "app", "encodings: app (the app's today), or a list such as tight,zrle,copyrect,raw,desktop,ext,cursor,last,q6,c1,cu,16bpp")
-	r.mode = fs.String("mode", "stopwait", "how updates are asked for: stopwait, early, pipeline, continuous")
+	r.mode = fs.String("mode", "stopwait", "how updates are asked for: stopwait, early, gated, pipeline, continuous")
 	r.ref = fs.Bool("ref", true, "a second, lossless connection (the app's) for quality, and its bytes for comparison")
 	r.repeat = fs.Int("repeat", 1, "runs of each scene")
 	r.jsonOut = fs.String("json", "", "append one JSON line per scene run to this file")
 	r.record = fs.String("record", "", "record the test connection's bytes into this directory, one file per scene (VNCREC1)")
 	r.browser = fs.String("browser", "Safari", "the browser that shows the bench page")
+	r.area = fs.String("area", "", "page: the test connection asks for the bench page's part of the screen only (a view zoomed in on it)")
 }
 
 // appEncodings is what the app asks for today (RFBClient.encodings): ZRLE, CopyRect, Raw, DesktopSize,
@@ -90,7 +92,9 @@ func parseConfig(s string) ([]int32, pixelFormat, error) {
 // bench is the page the scenes run in, served here and shown in a browser on the Mac: it switches scenes as /state
 // says and reports the inputs it saw (/event), and its markers let the screen be found in the framebuffer.
 type bench struct {
-	url string
+	url     string
+	browser string
+	polled  time.Time // a page last asked for the scene
 
 	mu     sync.Mutex
 	scene  string
@@ -113,9 +117,13 @@ type pageEvent struct {
 func newBench() (*bench, error) {
 	b := &bench{scene: "idle"}
 	b.photos = photos()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
+	// A fixed port, so a page left open by an earlier run comes back to this one by itself (it asks /state every
+	// 100 ms) instead of a new tab each run.
+	l, err := net.Listen("tcp", "127.0.0.1:38780")
 	if err != nil {
-		return nil, err
+		if l, err = net.Listen("tcp", "127.0.0.1:0"); err != nil {
+			return nil, err
+		}
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -125,6 +133,7 @@ func newBench() (*bench, error) {
 	})
 	mux.HandleFunc("/state", func(w http.ResponseWriter, r *http.Request) {
 		b.mu.Lock()
+		b.polled = time.Now()
 		s := map[string]any{"scene": b.scene, "freeze": b.freeze, "photos": len(b.photos)}
 		b.mu.Unlock()
 		w.Header().Set("Cache-Control", "no-store")
@@ -182,6 +191,21 @@ func photos() []string {
 		out = append(out, dst)
 	}
 	return out
+}
+
+// show brings the page up: one already open finds this run within a moment; else the browser opens it.
+func (b *bench) show() error {
+	time.Sleep(1500 * time.Millisecond)
+	b.mu.Lock()
+	open := time.Since(b.polled) < time.Second
+	b.mu.Unlock()
+	if open {
+		return exec.Command("open", "-a", b.browser).Run()
+	}
+	if err := exec.Command("open", "-a", b.browser, b.url).Run(); err != nil {
+		return fmt.Errorf("open the bench page: %w", err)
+	}
+	return nil
 }
 
 func (b *bench) set(scene string, freeze bool) {
@@ -290,7 +314,7 @@ func locate(fb *image.RGBA, dpr float64) (layout, bool) {
 	found = false
 	for y := fb.Rect.Dy() - 1; y >= 8 && !found; y-- {
 		for x := fb.Rect.Dx() - 1; x >= 8; x-- {
-			if block(x-7, y-7, cyan) && x > tl.X && y > tl.Y {
+			if block(x-7, y-7, cyan) && x > tl.X && y > tl.Y && block(x-15, y-15, cyan) {
 				br, found = image.Pt(x+1, y+1), true
 				break
 			}
@@ -302,7 +326,33 @@ func locate(fb *image.RGBA, dpr float64) (layout, bool) {
 	if dpr <= 0 {
 		dpr = 1
 	}
-	return layout{View: image.Rectangle{tl, br}, Scale: dpr}, true
+	// The cyan marker ends 24 CSS pixels in from the viewport's corner.
+	inset := int(24 * dpr)
+	return layout{View: image.Rectangle{tl, br.Add(image.Pt(inset, inset))}, Scale: dpr}, true
+}
+
+// targetAt says whether the page's target checker is on the screen at p (its centre): magenta top left and bottom
+// right, cyan top right and bottom left (page.go's conic gradient).
+func targetAt(fb *image.RGBA, p image.Point) bool {
+	magenta, cyan := [3]uint8{255, 0, 255}, [3]uint8{0, 255, 255}
+	return near(colourAt(fb, p.Add(image.Pt(-6, -6))), magenta, 60) && near(colourAt(fb, p.Add(image.Pt(6, -6))), cyan, 60) &&
+		near(colourAt(fb, p.Add(image.Pt(-6, 6))), cyan, 60) && near(colourAt(fb, p.Add(image.Pt(6, 6))), magenta, 60)
+}
+
+// aim waits until the target is visible at p, bringing the browser forward if something covers it.
+func aim(b *bench, c *probeConn, p image.Point) error {
+	for try := 0; try < 12; try++ {
+		var ok bool
+		c.WithFramebuffer(func(fb *image.RGBA) { ok = targetAt(fb, p) })
+		if ok {
+			return nil
+		}
+		if try%4 == 3 {
+			_ = exec.Command("open", "-a", b.browser).Run()
+		}
+		time.Sleep(400 * time.Millisecond)
+	}
+	return errors.New("another window covers the bench page where the input would go: nothing sent")
 }
 
 // sceneResult is one scene's numbers on the test connection (and the lossless one's bytes alongside).
@@ -438,8 +488,9 @@ func runScenes(ctx context.Context, t target, cred credentials, f runFlags) erro
 		return err
 	}
 	b.set("idle", false)
-	if err := exec.Command("open", "-a", *f.browser, b.url).Run(); err != nil {
-		return fmt.Errorf("open the bench page: %w", err)
+	b.browser = *f.browser
+	if err := b.show(); err != nil {
+		return err
 	}
 	// The lossless reference connects straight to the server (not through the relay or the shaping): it is a
 	// picture of the moment, not a measurement of the path.
@@ -473,19 +524,39 @@ func runScenes(ctx context.Context, t target, cred credentials, f runFlags) erro
 					return err
 				}
 			}
-			test, err := open(ctx, t, cred, pf, encs, mode, rec)
-			if err != nil {
-				return fmt.Errorf("test connection: %w", err)
+			var r sceneResult
+			for attempt := 0; attempt < 3; attempt++ {
+				var test *probeConn
+				test, err = open(ctx, t, cred, pf, encs, mode, rec)
+				if err != nil {
+					return fmt.Errorf("test connection: %w", err)
+				}
+				if *f.area == "page" {
+					if lay, lerr := ensure(b, test, sc); lerr == nil {
+						test.area.Store(lay.View)
+						_ = test.Request(true, lay.View)
+					}
+				}
+				r, err = runScene(b, sc, test, ref)
+				_ = test.Close()
+				if err == nil {
+					break
+				}
+				fmt.Fprintf(os.Stderr, "vncbench: %s (try %d): %v\n", sc, attempt+1, err)
+				_ = exec.Command("open", "-a", b.browser).Run()
+				time.Sleep(time.Second)
 			}
-			r, err := runScene(b, sc, test, ref)
-			_ = test.Close()
 			if rec != nil {
 				_ = rec.Close()
 			}
 			if err != nil {
-				return fmt.Errorf("%s: %w", sc, err)
+				fmt.Printf("| %s | %s | %s | %s | error: %v |\n", sc, *f.config, mode, t, err)
+				continue
 			}
 			r.Config, r.Mode, r.Target = *f.config, mode, t.String()
+			if *f.area != "" {
+				r.Config += " area=" + *f.area
+			}
 			printResult(r)
 			if out != nil {
 				line, _ := json.Marshal(r)
@@ -531,11 +602,15 @@ func printResult(r sceneResult) {
 		r.Mbps, refMbps, r.FPS, r.StageFPS, lat, split, q, psnr)
 }
 
-// ensure shows the page's scene and finds it on the screen through c.
+// ensure shows the page's scene and finds it on the screen through c, bringing the browser to the front when
+// another window covers it (other work on the same Mac opens windows of its own).
 func ensure(b *bench, c *probeConn, scene string) (layout, error) {
 	b.set(scene, false)
 	deadline := time.Now().Add(20 * time.Second)
-	for time.Now().Before(deadline) {
+	for try := 0; time.Now().Before(deadline); try++ {
+		if try > 0 && try%4 == 0 {
+			_ = exec.Command("open", "-a", b.browser).Run()
+		}
 		time.Sleep(300 * time.Millisecond)
 		b.mu.Lock()
 		dpr := 1.0
@@ -579,7 +654,6 @@ func runScene(b *bench, scene string, test, ref *probeConn) (sceneResult, error)
 	var froms []int
 	press := func(at time.Time) { inputs = append(inputs, at); froms = append(froms, test.markerNow()) }
 	stage := lay.stage()
-	mid := image.Pt((stage.Min.X+stage.Max.X)/2, (stage.Min.Y+stage.Max.Y)/2)
 	var ssims []float64
 	sample := func() {
 		if ref == nil {
@@ -598,13 +672,19 @@ func runScene(b *bench, scene string, test, ref *probeConn) (sceneResult, error)
 	case "idle":
 		time.Sleep(8 * time.Second)
 	case "type":
-		_ = test.Pointer(mid.X, mid.Y, 0)
-		_ = test.Pointer(mid.X, mid.Y, 1)
-		_ = test.Pointer(mid.X, mid.Y, 0)
-		time.Sleep(500 * time.Millisecond)
-		test.settle(300*time.Millisecond, 3*time.Second)
+		tg := lay.at(60, 28+60)
 		var focused bool
-		test.WithFramebuffer(func(fb *image.RGBA) { focused = near(colourAt(fb, lay.focus()), [3]uint8{30, 200, 30}, 60) })
+		for click := 0; click < 3 && !focused; click++ {
+			if err := aim(b, test, tg); err != nil {
+				return r, err
+			}
+			_ = test.Pointer(tg.X, tg.Y, 0)
+			_ = test.Pointer(tg.X, tg.Y, 1)
+			_ = test.Pointer(tg.X, tg.Y, 0)
+			time.Sleep(500 * time.Millisecond)
+			test.settle(300*time.Millisecond, 3*time.Second)
+			test.WithFramebuffer(func(fb *image.RGBA) { focused = near(colourAt(fb, lay.focus()), [3]uint8{30, 200, 30}, 60) })
+		}
 		if !focused {
 			return r, errors.New("the bench page does not have the keyboard: not typing into another app")
 		}
@@ -624,29 +704,41 @@ func runScene(b *bench, scene string, test, ref *probeConn) (sceneResult, error)
 			time.Sleep(110 * time.Millisecond)
 		}
 	case "scroll":
-		_ = test.Pointer(mid.X, mid.Y, 0)
+		tg := lay.at(60, 28+60)
+		if err := aim(b, test, tg); err != nil {
+			return r, err
+		}
+		_ = test.Pointer(tg.X, tg.Y, 0)
 		time.Sleep(300 * time.Millisecond)
 		t0 = time.Now()
 		for burst := range 6 {
-			b := byte(16) // down
+			wheel := byte(16) // down
 			if burst%2 == 1 {
-				b = 8
+				wheel = 8
 			}
 			test.settle(250*time.Millisecond, 2*time.Second)
+			if err := aim(b, test, tg); err != nil {
+				return r, err
+			}
 			press(time.Now())
 			for range 15 {
-				_ = test.Pointer(mid.X, mid.Y, b)
-				_ = test.Pointer(mid.X, mid.Y, 0)
+				_ = test.Pointer(tg.X, tg.Y, wheel)
+				_ = test.Pointer(tg.X, tg.Y, 0)
 				time.Sleep(30 * time.Millisecond)
 			}
 		}
 	case "drag":
-		grab := lay.at(120, 28+60+14) // the panel's title bar (page.go: the panel starts at 60, 60 in the stage)
+		// The panel's title bar, on its target (page.go: the panel starts at 60, 60 in the stage; the target 12, 2 in
+		// its bar, 24 wide).
+		grab := lay.at(60+12+12, 28+60+2+12)
 		_ = test.Pointer(grab.X, grab.Y, 0)
 		time.Sleep(200 * time.Millisecond)
 		t0 = time.Now()
 		for range 3 {
 			test.settle(250*time.Millisecond, 2*time.Second)
+			if err := aim(b, test, grab); err != nil {
+				return r, err
+			}
 			_ = test.Pointer(grab.X, grab.Y, 1)
 			time.Sleep(50 * time.Millisecond)
 			p := grab
@@ -781,5 +873,144 @@ func recordOnly(ctx context.Context, t target, cred credentials, config, mode, p
 	defer p.Close()
 	time.Sleep(d)
 	fmt.Printf("recorded %s: %d updates, %.1f MB in %s\n", path, p.count(), float64(p.BytesIn())/1e6, d)
+	return nil
+}
+
+// areaTest checks how the server treats a client that asks for part of the screen only (the app asking for what its
+// view shows): while the page's video plays, the test connection asks for updates of a strip above the video only;
+// then the video stops and it asks (incrementally) for the whole screen again. Whether the video's last picture
+// then arrives says if the server kept track of what changed outside the part asked for, or if the client must ask
+// for such a part whole.
+func areaTest(ctx context.Context, t target, cred credentials, browser string) error {
+	b, err := newBench()
+	if err != nil {
+		return err
+	}
+	b.browser = browser
+	b.set("video", false)
+	if err := b.show(); err != nil {
+		return err
+	}
+	ref, err := open(ctx, target{Addr: t.Addr, Hub: t.Hub, Machine: t.Machine, Token: t.Token}, cred, pf32, appEncodings, "stopwait", nil)
+	if err != nil {
+		return err
+	}
+	defer ref.Close()
+	lay, err := ensure(b, ref, "video")
+	if err != nil {
+		return err
+	}
+	strip := image.Rect(0, 0, ref.Width, max(1, lay.stage().Min.Y-1))
+	c, err := connect(ctx, t, cred, pf32, appEncodings, nil)
+	if err != nil {
+		return err
+	}
+	test := &probeConn{}
+	test.session = start(c, "none")
+	defer test.Close()
+	var mu sync.Mutex
+	area := c.Whole()
+	c.OnUpdate = func(u updateInfo) {
+		test.mu.Lock()
+		test.samples = append(test.samples, markerSample{u.End, 0})
+		test.mu.Unlock()
+		test.session.mu.Lock()
+		test.session.updates = append(test.session.updates, u)
+		test.session.cond.Broadcast()
+		test.session.mu.Unlock()
+		mu.Lock()
+		a := area
+		mu.Unlock()
+		_ = c.Request(true, a)
+	}
+	_ = c.Request(false, c.Whole())
+	test.waitUpdates(1, 10*time.Second)
+	time.Sleep(time.Second)
+	in0 := c.BytesIn()
+	time.Sleep(4 * time.Second)
+	whole := c.BytesIn() - in0
+	mu.Lock()
+	area = strip
+	mu.Unlock()
+	time.Sleep(time.Second)
+	in1 := c.BytesIn()
+	time.Sleep(4 * time.Second)
+	part := c.BytesIn() - in1
+	b.set("video", true) // the video stops on its last picture
+	time.Sleep(time.Second)
+	mu.Lock()
+	area = c.Whole()
+	mu.Unlock()
+	_ = c.Request(true, c.Whole())
+	test.settle(500*time.Millisecond, 5*time.Second)
+	ref.settle(500*time.Millisecond, 5*time.Second)
+	video := lay.stage()
+	q := compare(test.Snapshot(), ref.Snapshot(), video)
+	fmt.Printf("whole screen asked: %.2f Mbit/s; only the strip above the video (%v): %.2f Mbit/s\n",
+		float64(whole)*8/4e6, strip, float64(part)*8/4e6)
+	fmt.Printf("after asking for the whole screen again, incrementally: the video's area against a lossless copy: SSIM %.4f, PSNR %.1f dB\n", q.SSIM, q.PSNR)
+	_ = c.Request(false, video)
+	test.settle(500*time.Millisecond, 5*time.Second)
+	q2 := compare(test.Snapshot(), ref.Snapshot(), video)
+	fmt.Printf("after asking for the video's area whole: SSIM %.4f, PSNR %.1f dB\n", q2.SSIM, q2.PSNR)
+	b.set("idle", false)
+	return nil
+}
+
+// trace runs one scene on a connection asking as mode does and prints, in order, each request going out and each
+// update's start, end, size and painted area, in milliseconds from the start: how the server answers each way of
+// asking.
+func trace(ctx context.Context, t target, cred credentials, scene, mode string, d time.Duration) error {
+	b, err := newBench()
+	if err != nil {
+		return err
+	}
+	b.browser = "Safari"
+	b.set(scene, false)
+	if err := b.show(); err != nil {
+		return err
+	}
+	c, err := connect(ctx, t, cred, pf32, appEncodings, nil)
+	if err != nil {
+		return err
+	}
+	var mu sync.Mutex
+	var lines []string
+	t0 := time.Now()
+	stamp := func() float64 { return float64(time.Since(t0).Microseconds()) / 1000 }
+	c.OnRequest = func(inc bool, r image.Rectangle) {
+		mu.Lock()
+		lines = append(lines, fmt.Sprintf("%9.1f request incremental=%v %v", stamp(), inc, r))
+		mu.Unlock()
+	}
+	p := &probeConn{}
+	p.session = start(c, mode)
+	defer p.Close()
+	inner, innerStart := c.OnUpdate, c.OnUpdateStart
+	c.OnUpdateStart = func() {
+		mu.Lock()
+		lines = append(lines, fmt.Sprintf("%9.1f update starts", stamp()))
+		mu.Unlock()
+		if innerStart != nil {
+			innerStart()
+		}
+	}
+	c.OnUpdate = func(u updateInfo) {
+		mu.Lock()
+		lines = append(lines, fmt.Sprintf("%9.1f update ends: %d bytes, %d rects, %d px painted, took %.1f ms", stamp(), u.Bytes, u.Rects, u.Area,
+			float64(u.End.Sub(u.Start).Microseconds())/1000))
+		mu.Unlock()
+		inner(u)
+	}
+	if err := p.first(); err != nil {
+		return err
+	}
+	time.Sleep(d)
+	mu.Lock()
+	defer mu.Unlock()
+	for _, l := range lines {
+		fmt.Println(l)
+	}
+	fmt.Printf("%d updates in %s\n", p.count(), d)
 	return nil
 }

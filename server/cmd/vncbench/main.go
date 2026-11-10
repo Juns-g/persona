@@ -40,6 +40,14 @@ func main() {
 	recMode := fs.String("rec-mode", "stopwait", "record: how updates are asked for (as run's -mode)")
 	recOut := fs.String("out", "vnc.vncrec", "record: the file")
 	recFor := fs.Duration("for", 10*time.Second, "record: how long")
+	shotScale := fs.Int("scale", 2, "shot: scaled down by this")
+	privLo := fs.Int("lo", 1000, "private: the first encoding")
+	privHi := fs.Int("hi", 1199, "private: the last encoding")
+	privStep := fs.Int("step", 20, "private: encodings asked at once")
+	dumpEnc := fs.Int("enc", 1000, "dump: the encoding")
+	traceScene := fs.String("scene", "video", "trace: the bench page's scene")
+	dumpN := fs.Int("n", 256, "dump: bytes shown")
+	dumpOut := fs.String("raw", "", "dump: also write every byte that came to this file")
 	relayPort := fs.Int("port", 38777, "relay: the echo server's port on this machine")
 	echoOnly := fs.Bool("echo-only", false, "relay: only serve the echo server (the client runs elsewhere)")
 	noEcho := fs.Bool("no-echo", false, "relay: the echo server runs on the machine measured, not here")
@@ -69,6 +77,16 @@ func main() {
 		err = probe(ctx, t, cred)
 	case "run":
 		err = runScenes(ctx, t, cred, run)
+	case "shot":
+		err = shot(ctx, t, cred, *recOut, *shotScale)
+	case "dump":
+		err = dump(ctx, t, cred, int32(*dumpEnc), *dumpN, 3*time.Second, *dumpOut)
+	case "trace":
+		err = trace(ctx, t, cred, *traceScene, *recMode, *recFor)
+	case "area":
+		err = areaTest(ctx, t, cred, "Safari")
+	case "private":
+		probePrivate(ctx, t, cred, int32(*privLo), int32(*privHi), int32(*privStep))
 	case "record":
 		err = recordOnly(ctx, t, cred, *recConfig, *recMode, *recOut, *recFor)
 	default:
@@ -80,7 +98,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: vncbench probe|run|record|relay [flags]  (vncbench run -h for its flags)")
+	fmt.Fprintln(os.Stderr, "usage: vncbench probe|private|dump|shot|area|trace|run|record|relay [flags]  (vncbench run -h for its flags)")
 	os.Exit(2)
 }
 

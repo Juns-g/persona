@@ -87,6 +87,7 @@ func (c *client) zrleRect(x, y, w, h int) error {
 	if err != nil {
 		return err
 	}
+	c.firstSize(int(n))
 	if err := c.compressed(&c.zrle, int(n)); err != nil {
 		return err
 	}

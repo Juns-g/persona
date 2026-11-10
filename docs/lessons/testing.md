@@ -800,3 +800,15 @@ To check that a failure is this, move `dev.json` aside in the app's data contain
 - The mock must implement the same single-item `POST /api/v1/inbox/{id}/done` route as the hub when a test asserts filing. A 404 makes `InboxStore` roll back its optimistic Done; polling cannot turn that into a pass. Reset the item before each case and poll the server after the successful send because filing is asynchronous.
 
 - Presence tests wait for the existing state notification or report-request counter before checking the result (#2820). A negative observation keeps its entire window and fails immediately on an early result; it does not prove an unobservable internal wait has started. A wall-clock-seeded connection number needs a bounded check of that actual clock boundary, not a fixed startup delay.
+
+## Measuring latency on the shared Mac (2026-11-10, #3067)
+
+- The Mac other lanes build on runs at a load average of 100–260 on 20 cores. The same path's small-message round
+  trip moved between 6 and 47 ms (p50) within minutes, and a hub redeploy by another lane can land mid-run (check the
+  hub processes' `etime`). Compare by interleaving the variants, several rounds, medians, with the load average logged.
+- Driving the real desktop (`server/cmd/vncbench run`): other lanes' windows and dialogs open on top of yours at any
+  time. Send a click, a wheel notch or a drag only where your own page is seen on the screen (vncbench's target
+  checker), type only while your page says it has the keyboard, and bring your browser forward with `open -a`, never
+  by clicking. A window's rounded corner clips a marker drawn in it: keep markers inset.
+- An agent's shell is not the login session: the login keychain is locked there and `security … -w` exits 36 (no user
+  interaction allowed). A secret the user stored in the keychain can't be read; use a 0600 file outside the repository.
