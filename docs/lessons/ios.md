@@ -1689,6 +1689,21 @@ A worktree's display name and its Agents' conversation names are different comma
 
 HTTP failures live in `Shared/APIClient.swift`, not PersonaKit's model-response `APIErrorInfo`. Classify business codes before status or timeout wording. A background sync must pause on disabled/read-only configuration without discarding uploads or deletion intent; another local save cannot repair that configuration. Reopen/foreground can explicitly recheck. Do not continue writes after failed reconciliation, and do not acknowledge a remote deletion from an unsupported 404. Keep the list's pending-delete explanation durable across relaunch.
 
+## A header with nothing under it can stretch the scroll edge blur over a whole List (2026-11-11, #4218)
+
+- On an iPhone (TestFlight), the inbox's rows all turned blurred and washed out as soon as a section title stuck under the navigation bar,
+  and came back only at the list's top. Titles of sections with rows stayed sharp; the edge's hairline sat at the bottom of Done's title,
+  the header of an empty section (`Section { EmptyView() } header:`) holding a `Menu` (Jump To). The iOS 27.0 and 27.1 simulators drew the
+  edge right in every layout tried (same style, grouping, sections, an end bounce) with the offset set directly (`personactl.py scroll`, lldb).
+- How the edge is built (iOS 27, read from a running app with `xcrun lldb -p <pid>`, `recursiveDescription` and `_ivarDescription`): a
+  List's top `UIKit.ScrollEdgeEffectView` is sized to a `PocketElementModel`'s region: the bar, the status bar, and the content of every
+  stuck header, which SwiftUI registers as "floating" elements (`ScrollPocketElementInteraction` views in each header cell). With a
+  floating element the automatic style draws `thinFilm(floating)`, a film down to the region's bottom with a hairline there; forcing
+  `.soft` draws `soft` over the same region. A header counted as floating while it is not stuck therefore takes the film down to it.
+- So keep titles that have no rows of their own out of section headers: they never stick anyway (`titleRow` in `InboxView`; a row's
+  44 pt minimum makes it 2 pt taller than the header). Look for the region in the lldb dump first when a list blurs as a whole; the
+  simulator may not show what the device does.
+
 ## Rolling recording
 
 ### Segment wall-clock start comes from the audio host time

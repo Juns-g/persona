@@ -564,7 +564,7 @@ struct InboxPage: View {
                         let header = sectionHeader(tier.title, count: items.count + agents.count, key: tier.rawValue, manager: manager,
                                                    clear: picked == nil ? InboxPage.clearTitle(tier).map { ($0, { store.setDone(items, true) }) } : nil)
                         if titled(tier, groups: groups, agents: agents.count) {
-                            Section { EmptyView() } header: { header }
+                            Section { titleRow(header) }
                             if folds.isOpen(tier.rawValue, manager: manager) {
                                 if !agents.isEmpty {
                                     let g = InboxGroups.Group(key: "agents", title: String(localized: "Agents Waiting on You"), items: [])
@@ -599,7 +599,7 @@ struct InboxPage: View {
                     let count = more ? "\(doneCount)+" : "\(doneCount)"
                     let filtered = !source.isEmpty || !kind.isEmpty || !query.isEmpty
                     if dg.count > 1 {
-                        Section { EmptyView() } header: { doneHeader(count: count, groups: dg, manager: manager, proxy: proxy) }
+                        Section { titleRow(doneHeader(count: count, groups: dg, manager: manager, proxy: proxy)) }
                         if folds.isOpen("done", manager: manager) {
                             ForEach(dg) { g in
                                 Section {
@@ -705,6 +705,18 @@ struct InboxPage: View {
             guard let first else { return }
             withAnimation(Theme.Motion.standard) { proxy.scrollTo(first, anchor: .top) }
         }
+    }
+
+    /// A title with no rows of its own under it (a tier whose groups have titles, Done listing its groups with Jump To) as
+    /// a row, not as the header of an empty section: such a title never stuck anyway. As a header (Done's, with its Jump To
+    /// menu, #2979) the iPhone counted it with a stuck title above and drew the scroll edge blur from the top down to it,
+    /// over every row between (#4218). The row's minimum height leaves it 2 pt taller than that header.
+    private func titleRow(_ title: some View) -> some View {
+        title
+            .listRowInsets(.vertical, Theme.Space.s)
+            .listRowSeparator(.hidden)
+            .listRowBackground(Color.clear)
+            .accessibilityAddTraits(.isHeader)
     }
 
     /// A section title that opens / closes the section, with an optional action on the right (List headers take no
