@@ -298,7 +298,7 @@ internal fun leaderCountsOf(data: JsonObject): Map<String, LeaderCounts> = data.
     .mapNotNull { l -> l.string("id").takeIf { it.isNotEmpty() }?.let { id -> id to l.counts() } }
     .toMap()
 
-private fun JsonObject.counts(): LeaderCounts = obj("counts")?.let { LeaderCounts(number("working")?.toInt() ?: 0, number("needs_you")?.toInt() ?: 0) }
+private fun JsonObject.counts(): LeaderCounts = obj("counts")?.let { c -> LeaderCounts(c.number("working")?.toInt() ?: 0, c.number("needs_you")?.toInt() ?: 0) }
     ?: LeaderCounts()
 
 /** A current leader's name and open tasks, as `GET /api/v1/assistant/leaders` has them. */

@@ -162,7 +162,7 @@ class AssistantSwitcherShotsTest {
         CompositionLocalProvider(LocalManagerRoster provides roster) {
             val choice = persona.core.designsystem.currentAssistant()
             // What the shown assistant's page read: its own conversations (another's has none here).
-            val snapshot = if (choice.id == "assistant") AssistantSnapshot(conversations = listOf(main) + conversations, mainSession = main.key,
+            val snapshot = if (choice.id == "assistant") AssistantSnapshot(conversations = listOf(main) + conversations, mainSession = main.key, leaders = conversations.map { it.sessionId },
                 manager = null, managerId = "assistant") else AssistantSnapshot(manager = choice.id, managerId = choice.id)
             val waiting = roster?.waiting(cards, sessions).orEmpty()
             Box(Modifier.testTag("shot").fillMaxSize().background(PersonaTheme.palette.background)) {
