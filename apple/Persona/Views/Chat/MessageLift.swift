@@ -231,6 +231,44 @@ nonisolated enum LiftLayout {
         }
         return out
     }
+
+    /// Where the text view's lines may break, so they break where the chat's do (#3188). TextKit does not wrap as
+    /// SwiftUI does: a sentence the chat broke after 12 characters, it filled to 15. texts: the chat's words, one
+    /// `WordBreaks` a text, in order; paragraphs: the text view's that wrap, in order (a list item's past its marker).
+    /// Each paragraph takes the next text as long as it, or as long as it and the paragraphs right after it (one line
+    /// break apart: a line break inside a Markdown paragraph is a paragraph here and a line of one text there); texts
+    /// none is as long as (a list's markers, a code block's title, a button) are passed over, and a paragraph no text is
+    /// as long as keeps TextKit's breaks. In `held` a line breaks only at `at`.
+    static func follow(_ texts: [WordBreaks], paragraphs: [NSRange]) -> (held: IndexSet, at: IndexSet) {
+        var held = IndexSet(), at = IndexSet()
+        var next = 0, i = 0
+        while i < paragraphs.count {
+            let p = paragraphs[i]
+            var runs: [(end: Int, length: Int)] = [(i, p.length)]
+            var j = i
+            while j + 1 < paragraphs.count, paragraphs[j + 1].location == NSMaxRange(paragraphs[j]) + 1 {
+                j += 1
+                runs.append((j, NSMaxRange(paragraphs[j]) - p.location))
+            }
+            guard next < texts.count, let k = texts[next...].firstIndex(where: { t in runs.contains { $0.length == t.length } }),
+                  let run = runs.first(where: { $0.length == texts[k].length }) else {
+                i += 1
+                continue
+            }
+            held.insert(integersIn: p.location..<(p.location + run.length))
+            for b in texts[k].at where b > 0 && b < run.length { at.insert(p.location + b) }
+            next = k + 1
+            i = run.end + 1
+        }
+        return (held, at)
+    }
+}
+
+/// A text's words as the chat laid them out (`Text.Layout`): how long they are and where each line after the first
+/// starts, in UTF-16 units (an `NSString`'s) from their start.
+struct WordBreaks: Equatable {
+    var length: Int
+    var at: [Int] = []
 }
 
 /// A folded quote's card (`ReplyQuote`): its words are all laid out, the lines past the fold hidden, so those are no
@@ -254,12 +292,15 @@ struct WordLine: Equatable {
 struct ShownWords: PreferenceKey, Equatable {
     var lines: [WordLine] = []
     var folds: [CGRect] = []
+    /// Where each text's lines break, all of them (a folded quote's too), in order (`LiftLayout.follow`).
+    var texts: [WordBreaks] = []
 
     static var defaultValue: ShownWords { ShownWords() }
     static func reduce(value: inout ShownWords, nextValue: () -> ShownWords) {
         let n = nextValue()
         value.lines += n.lines
         value.folds += n.folds
+        value.texts += n.texts
     }
 
     /// The lines that show: not those of a text in a folded quote past its card's bottom.
@@ -290,6 +331,22 @@ struct ShownWords: PreferenceKey, Equatable {
         }
         return out
     }
+
+    /// Each text's line breaks, in the order the texts come.
+    static func breaks(_ layouts: Text.LayoutKey.Value) -> [WordBreaks] {
+        layouts.compactMap { a in
+            var first: Text.Layout.CharacterIndex?, last: Text.Layout.CharacterIndex?
+            var starts: [Text.Layout.CharacterIndex] = []
+            for line in a.layout {
+                let at = line.flatMap(\.characterIndices)
+                guard let lo = at.min(), let hi = at.max() else { continue }
+                if first == nil { first = lo } else { starts.append(lo) }
+                last = max(last ?? hi, hi)
+            }
+            guard let first, let last else { return nil }
+            return WordBreaks(length: first.distance(to: last) + 1, at: starts.map { first.distance(to: $0) })
+        }
+    }
 }
 
 extension View {
@@ -300,7 +357,10 @@ extension View {
             GeometryReader { geo in Color.clear.preference(key: ShownWords.self, value: ShownWords(folds: folds.map { geo[$0] })) }
         }
         .backgroundPreferenceValue(Text.LayoutKey.self) { layouts in
-            GeometryReader { geo in Color.clear.preference(key: ShownWords.self, value: ShownWords(lines: ShownWords.measure(layouts, geo))) }
+            GeometryReader { geo in
+                Color.clear.preference(key: ShownWords.self,
+                                       value: ShownWords(lines: ShownWords.measure(layouts, geo), texts: ShownWords.breaks(layouts)))
+            }
         }
         .overlayPreferenceValue(ShownWords.self) { shown in read(shown) }
         .transformPreference(ShownWords.self) { $0 = ShownWords() }

@@ -1,4 +1,5 @@
 import CoreGraphics
+import Foundation
 import Testing
 @testable import Persona
 
@@ -113,5 +114,37 @@ struct MessageLiftTests {
         let open = LiftLayout.snap(lines, to: [20, 52, 76, 100, 124, 148, 172, 212], reach: 10)
         #expect(open.map(\.at) == [20, 52, 76, 100, 124, 148, 172, 212])
         #expect(!open.contains { $0.hidden })
+    }
+
+    /// TextKit fills a line SwiftUI breaks early (#3188): the text view's lines break only where the chat's do. The
+    /// chat broke this sentence after 12, 25, 51 and 75 characters; TextKit alone put 15 on the first line.
+    @Test func theTextViewsLinesBreakWhereTheChatsDo() {
+        let out = LiftLayout.follow([WordBreaks(length: 83, at: [12, 25, 51, 75])], paragraphs: [NSRange(location: 0, length: 83)])
+        #expect(out.held == IndexSet(integersIn: 0..<83))
+        #expect(out.at == IndexSet([12, 25, 51, 75]))
+    }
+
+    /// A reply: its texts in order are a paragraph, a list item's marker and words, a code block's title and code, and
+    /// a paragraph with a line break in it. The text view's paragraphs that wrap: the first, the item past its marker
+    /// ("•\t"), and the last paragraph's two lines (one line break apart). Each takes its text's breaks; the marker, the
+    /// title and the code (not among them) are passed over.
+    @Test func eachParagraphTakesTheBreaksOfTheTextAsLongAsIt() {
+        let texts = [WordBreaks(length: 30, at: [14]), WordBreaks(length: 1), WordBreaks(length: 20, at: [9]),
+                     WordBreaks(length: 4), WordBreaks(length: 6, at: [3]), WordBreaks(length: 9, at: [4, 6])]
+        let paragraphs = [NSRange(location: 0, length: 30), NSRange(location: 34, length: 20),
+                          NSRange(location: 56, length: 3), NSRange(location: 60, length: 5)]
+        let out = LiftLayout.follow(texts, paragraphs: paragraphs)
+        var held = IndexSet(integersIn: 0..<30)
+        held.insert(integersIn: 34..<54)
+        held.insert(integersIn: 56..<65)
+        #expect(out.held == held)
+        #expect(out.at == IndexSet([14, 43, 60, 62]))
+    }
+
+    /// A paragraph no text is as long as (written differently in the chat) keeps TextKit's own breaks.
+    @Test func aParagraphNoTextMatchesKeepsItsOwnBreaks() {
+        let out = LiftLayout.follow([WordBreaks(length: 9, at: [4])], paragraphs: [NSRange(location: 0, length: 10)])
+        #expect(out.held.isEmpty)
+        #expect(out.at.isEmpty)
     }
 }

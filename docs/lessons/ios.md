@@ -147,6 +147,12 @@ from colliding with its buttons.
   and the text layouts into one value (`ShownWords`) in backgrounds and reads it in an overlay, since one `overlayPreferenceValue` reads one
   key. Likewise a code block's title bar is no line of the message (`oneBlockInLift`), and its code's first line takes the chat's next row
   wherever the bar put it.
+- **SwiftUI and TextKit wrap the same words at the same width differently.** A sentence of Chinese with a path in it: the chat broke it
+  after 12 characters, TextKit (1 or 2, with any `lineBreakStrategy`, the same font and width) filled the line to 15, and every line after
+  moved. A bare `Text` with the same string (with its path as a link or not) wrapped as TextKit did; what in the chat's MarkdownUI text
+  changes it was not found. Don't try
+  to reproduce the chat's line breaker: `Text.Layout.Run.characterIndices` (UTF-16 offsets) says where each of the chat's lines starts, and
+  `shouldBreakLineByWordBeforeCharacterAt` holds TextKit to those places (`WordBreaks`, `LiftLayout.follow`).
 - A `UIScrollView` subclass cannot have a property named `dragging`: its Objective-C getter is `isDragging`'s, and the override fails.
   `Layout` methods are not on the main actor: what they write must be `nonisolated`.
 - **UIKit only scrolls a text view's own content while a selection handle is held at its edge.** With `isScrollEnabled = false` inside a

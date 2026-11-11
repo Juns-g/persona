@@ -98,7 +98,7 @@ private struct SelectableInLift: ViewModifier {
                 if let select, let menu {
                     GeometryReader { geo in
                         LiftTextView(text: source, words: words, select: select, menu: menu, place: place,
-                                     rows: shown.rows, folds: shown.foldSpans)
+                                     rows: shown.rows, folds: shown.foldSpans, texts: shown.texts)
                             .frame(width: geo.size.width, height: geo.size.height)
                     }
                 }
@@ -202,6 +202,8 @@ private struct LiftTextView: UIViewRepresentable {
     var rows: [CGFloat]
     /// Its folded quotes' cards (`ShownWords.foldSpans`).
     var folds: [ClosedRange<CGFloat>]
+    /// Where the chat's lines break (`ShownWords.texts`).
+    var texts: [WordBreaks]
 
     func makeUIView(context: Context) -> LiftUITextView { LiftUITextView() }
 
@@ -209,7 +211,7 @@ private struct LiftTextView: UIViewRepresentable {
         let menu = menu
         v.place = place
         v.show(text, words, design: UIFontDescriptor.SystemDesign(StyleSpec.current.fontDesign)) // the app's, as RootView sets it
-        v.snap(to: rows, folds: folds)
+        v.snap(to: rows, folds: folds, texts: texts)
         if let bar = menu.lift?.bar,
            let quote = menu.selectionQuote(of: SelectableText(text: bar.text, plain: bar.isUser, msg: bar.id, quotable: !bar.pending)) {
             v.quote = { picked in
@@ -244,7 +246,8 @@ extension UIFontDescriptor.SystemDesign {
 }
 
 /// The words in a read-only text view laid out by `ReplyLayout` (TextKit 1) over the chat's own, as wide as they are
-/// and wrapping where they wrap (`place`: the width they were offered). Clear: only the highlight and handles show.
+/// (`place`: the width they were offered), each line breaking where theirs does (`LiftLayout.follow`) and on theirs
+/// (`LiftLayout.snap`). Clear: only the highlight and handles show.
 final class LiftUITextView: UITextView, UITextViewDelegate, UIEditMenuInteractionDelegate {
     private let storage = NSTextStorage()
     private let layout = ReplyLayout()
@@ -255,6 +258,8 @@ final class LiftUITextView: UITextView, UITextViewDelegate, UIEditMenuInteractio
     private var rows: [CGFloat] = []
     /// Its folded quotes' cards: their lines past the fold are hidden (`LiftLayout.snap`).
     private var folds: [ClosedRange<CGFloat>] = []
+    /// Where the chat's lines break: its own break there too (`LiftLayout.follow`).
+    private var texts: [WordBreaks] = []
     private let snapper = LineSnap()
     /// The menu shown over the words a press picked. The text view's own menu only comes up on its own gestures, and
     /// its interaction is not among `interactions`; this one shows the same items.
@@ -326,22 +331,26 @@ final class LiftUITextView: UITextView, UITextViewDelegate, UIEditMenuInteractio
         #endif
     }
 
-    /// The chat's lines, for this view's to go on, and its folded quotes' cards.
-    func snap(to rows: [CGFloat], folds: [ClosedRange<CGFloat>] = []) {
+    /// The chat's lines, for this view's to go on, its folded quotes' cards, and where its lines break.
+    func snap(to rows: [CGFloat], folds: [ClosedRange<CGFloat>] = [], texts: [WordBreaks] = []) {
         let same = rows.count == self.rows.count && !zip(rows, self.rows).contains(where: { abs($0 - $1) > 0.25 })
             && folds.count == self.folds.count
             && !zip(folds, self.folds).contains(where: { abs($0.lowerBound - $1.lowerBound) > 0.25 || abs($0.upperBound - $1.upperBound) > 0.25 })
+            && texts == self.texts
         guard !same else { return }
         self.rows = rows
         self.folds = folds
+        self.texts = texts
         resnap()
     }
 
-    /// Lays the words out as they come, then again with each line on the chat's line for it (`LiftLayout.snap`).
+    /// Lays the words out breaking where the chat's do (`LiftLayout.follow`), then again with each line on the chat's
+    /// line for it (`LiftLayout.snap`).
     private func resnap() {
         let all = NSRange(location: 0, length: storage.length)
         snapper.targets = [:]
         snapper.hidden = []
+        (snapper.held, snapper.breaks) = LiftLayout.follow(texts, paragraphs: wrapping)
         layout.invalidateLayout(forCharacterRange: all, actualCharacterRange: nil)
         guard !rows.isEmpty, storage.length > 0 else { return }
         layout.ensureLayout(for: textContainer)
@@ -368,6 +377,25 @@ final class LiftUITextView: UITextView, UITextViewDelegate, UIEditMenuInteractio
         layout.invalidateLayout(forCharacterRange: all, actualCharacterRange: nil)
         layout.ensureLayout(for: textContainer)
         setNeedsDisplay()
+    }
+
+    /// Its paragraphs that wrap as words, a list item's past its marker: not a code block's lines (which do not
+    /// wrap), a table's picture or a rule.
+    private var wrapping: [NSRange] {
+        let text = storage.string as NSString
+        var out: [NSRange] = []
+        text.enumerateSubstrings(in: NSRange(location: 0, length: text.length), options: [.byParagraphs, .substringNotRequired]) { _, r, _, _ in
+            guard r.length > 0 else { return }
+            if let b = self.storage.attribute(.replyBlock, at: r.location, effectiveRange: nil) as? ReplyBlock, b.kind != .quote { return }
+            if text.range(of: "\u{FFFC}", range: r).location != NSNotFound { return }
+            var marker = NSRange()
+            if self.storage.attribute(.replyMarker, at: r.location, longestEffectiveRange: &marker, in: r) != nil {
+                if NSMaxRange(marker) < NSMaxRange(r) { out.append(NSRange(location: NSMaxRange(marker), length: NSMaxRange(r) - NSMaxRange(marker))) }
+            } else {
+                out.append(r)
+            }
+        }
+        return out
     }
 
     /// Where the words under it wrap: at the width they were offered, or (none known) at their own.
@@ -691,6 +719,13 @@ nonisolated final class LineSnap: NSObject, NSLayoutManagerDelegate {
     /// Lines (by their first glyph) of a folded quote past its fold: put at the card's bottom, they get no highlight
     /// and are not measured (`LiftUITextView.selectionRects`, `LiftLines`); copied, they are there.
     var hidden: Set<Int> = []
+    /// Where the chat's lines break (`LiftLayout.follow`): in `held`, a line breaks only before a character in `breaks`.
+    var held = IndexSet()
+    var breaks = IndexSet()
+
+    func layoutManager(_ layoutManager: NSLayoutManager, shouldBreakLineByWordBeforeCharacterAt charIndex: Int) -> Bool {
+        !held.contains(charIndex) || breaks.contains(charIndex)
+    }
 
     func layoutManager(_ layoutManager: NSLayoutManager, shouldSetLineFragmentRect lineFragmentRect: UnsafeMutablePointer<CGRect>,
                        lineFragmentUsedRect: UnsafeMutablePointer<CGRect>, baselineOffset: UnsafeMutablePointer<CGFloat>,
