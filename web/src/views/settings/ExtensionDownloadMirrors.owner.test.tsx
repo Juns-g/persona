@@ -3,7 +3,8 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { t } from "../../i18n";
-import { api, handleUnauthorized, setToken } from "../../lib/api";
+import { api, handleUnauthorized, setPairedToken, setToken } from "../../lib/api";
+import { CREDENTIAL_EPOCH_KEY, renewCredentialEpoch } from "../../lib/credential-epoch";
 import { reloadForSignIn } from "../../lib/edge-auth";
 import { pinManager, resetManagerChoice, setRosterDefault } from "../../lib/manager-choice";
 
@@ -136,14 +137,14 @@ describe("download mirror credential and manager ownership", () => {
     expect(server.get("assistant")).toEqual({ ...fresh, registry_mirror: edited });
   });
 
-  it.each([false, true])("rejects an old A read after B%s", async (returnToA) => {
+  it.each(["B", "B then A"])("rejects an old A read after %s", async (transition) => {
     const pending = hold();
     intercept = (call) => call.method === "GET" && getCalls("GET").length === 1 ? pending.response : undefined;
     await render();
     expect(getCalls("GET")[0].token).toBe("Bearer synthetic-A");
     server.set("assistant", { ...fresh });
     await switchCredential("synthetic-B", true);
-    if (returnToA) await switchCredential("synthetic-A", true);
+    if (transition === "B then A") await switchCredential("synthetic-A", true);
     expect(inputs()[1].value).toBe(fresh.catalog_mirror);
     expect(getCalls("GET")[0].signal?.aborted).toBe(true);
     await respond(pending, json(old)); // The synthetic transport ignores abort, like a late response.
@@ -167,6 +168,82 @@ describe("download mirror credential and manager ownership", () => {
     await respond(pending, answer === "settings" ? json(old) : jsonError(401));
     expect(inputs().map((input) => input.value)).toEqual([fresh.registry_mirror, fresh.catalog_mirror]);
     expect(unauthorized).not.toHaveBeenCalled();
+  });
+
+  it("reloads an edited form when the same token is paired again", async () => {
+    await render();
+    await edit(1, "https://unsaved.example");
+    server.set("assistant", { ...fresh });
+    await act(async () => setPairedToken("synthetic-A"));
+    await flush();
+    expect(getCalls("GET").map((call) => call.token)).toEqual(["Bearer synthetic-A", "Bearer synthetic-A"]);
+    expect(inputs().map((input) => input.value)).toEqual([fresh.registry_mirror, fresh.catalog_mirror]);
+    await edit(0, edited);
+    await save();
+    expect(getCalls("PUT")[0]).toMatchObject({ token: "Bearer synthetic-A", body: { ...fresh, registry_mirror: edited } });
+    expect(server.get("assistant")).toEqual({ ...fresh, registry_mirror: edited });
+  });
+
+  it("wakes a mounted form on another tab's same-token pairing epoch", async () => {
+    await render();
+    await edit(0, "https://unsaved.example");
+    server.set("assistant", { ...fresh });
+    await act(async () => {
+      const before = localStorage.getItem(CREDENTIAL_EPOCH_KEY);
+      expect(renewCredentialEpoch()).toBe(true);
+      const after = localStorage.getItem(CREDENTIAL_EPOCH_KEY);
+      expect(after).not.toBe(before);
+      window.dispatchEvent(new StorageEvent("storage", { key: CREDENTIAL_EPOCH_KEY, oldValue: before, newValue: after, storageArea: localStorage }));
+    });
+    await flush();
+    expect(getCalls("GET").map((call) => call.token)).toEqual(["Bearer synthetic-A", "Bearer synthetic-A"]);
+    expect(inputs().map((input) => input.value)).toEqual([fresh.registry_mirror, fresh.catalog_mirror]);
+  });
+
+  it.each(["settings", "json", "html", "redirect"])("rejects old A %s before cross-tab A to B to A events when the writer renews the shared epoch", async (answer) => {
+    const pending = hold();
+    intercept = (call) => call.method === "GET" && getCalls("GET").length === 1 ? pending.response : undefined;
+    await render();
+    server.set("assistant", { ...fresh });
+    // Another current client completed both pairings; this tab has not received storage events yet.
+    localStorage.setItem("persona.token", "synthetic-B");
+    expect(renewCredentialEpoch()).toBe(true);
+    localStorage.setItem("persona.token", "synthetic-A");
+    expect(renewCredentialEpoch()).toBe(true);
+    await respond(pending, answer === "settings" ? json(old) : authResponse(answer));
+    expect(getCalls("GET").map((call) => call.token)).toEqual(["Bearer synthetic-A", "Bearer synthetic-A"]);
+    expect(inputs().map((input) => input.value)).toEqual([fresh.registry_mirror, fresh.catalog_mirror]);
+    expect(unauthorized).not.toHaveBeenCalled();
+    expect(reloadForSignIn).not.toHaveBeenCalled();
+  });
+
+  it.each(["json", "html", "redirect"])("isolates a dispatched old write's %s after same-token reauthentication", async (answer) => {
+    const pending = hold();
+    intercept = (call) => call.method === "PUT" ? pending.response : undefined;
+    await render();
+    await edit(0, edited);
+    await save();
+    server.set("assistant", { ...fresh });
+    await act(async () => setPairedToken("synthetic-A"));
+    await flush();
+    expect(getCalls("GET")).toHaveLength(1); // The original write may still have committed.
+    intercept = undefined;
+    await respond(pending, authResponse(answer));
+    expect(inputs().map((input) => input.value)).toEqual([fresh.registry_mirror, fresh.catalog_mirror]);
+    expect(unauthorized).not.toHaveBeenCalled();
+    expect(reloadForSignIn).not.toHaveBeenCalled();
+    expect(host.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it("still signs out for the current owner's 401 after same-token reauthentication", async () => {
+    await render();
+    await act(async () => setPairedToken("synthetic-A"));
+    await flush();
+    intercept = (call) => call.method === "PUT" ? jsonError(401) : undefined;
+    await edit(0, edited);
+    await save();
+    expect(unauthorized).toHaveBeenCalledTimes(1);
+    expect(reloadForSignIn).not.toHaveBeenCalled();
   });
 
   it("waits for an old write while retiring a queued B read across A to B to A", async () => {
