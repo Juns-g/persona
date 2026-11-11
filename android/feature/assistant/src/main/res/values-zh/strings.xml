@@ -131,7 +131,7 @@
     <string name="assistant_needs_you_agent">Agent</string>
     <string name="assistant_pair_first">请先配对 hub</string>
     <plurals name="assistant_show_all_recent">
-        <item quantity="other">查看全部 %1$d 个</item>
+        <item quantity="other">全部对话（%1$d）</item>
     </plurals>
     <plurals name="assistant_needs_you_more">
         <item quantity="other">还有 %1$d 件在收件箱</item>

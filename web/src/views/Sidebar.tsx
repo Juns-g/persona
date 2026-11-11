@@ -17,7 +17,7 @@ import { machineWithHub } from "../lib/mesh";
 import { baseName, tabLabel } from "../lib/format";
 import { agentKey, isSpacePinned, pinnedSessions } from "../lib/pins";
 import { firstAndCurrent } from "../lib/persona-nav";
-import { pinOrder, sidebarConversations, splitDirections, usePinnedConversations } from "../lib/conversation-pins";
+import { directionOrder, directionPinned, pinOrder, sidebarConversations, splitDirections, usePinnedConversations } from "../lib/conversation-pins";
 import { directionLabel, useDirectionNames } from "../lib/direction-names";
 import { autoConversations, autoOrigin, isAutoConversation, originLabel, type AutoOrigin, type OriginTally } from "../lib/conversation-origins";
 import { ConversationRowMenu, pinnedSectionItems } from "./ConversationMenu";
@@ -253,9 +253,11 @@ export function Sidebar({ route, onSearch, onNewAgent, onNavigate }: { route: Ro
   const narrow = useMedia(NARROW);
   const activeKey = useActiveKey(route);
   const localPins = usePinnedConversations();
-  // the leader conversations are pinned by the hub, first (#3623): not this browser's to unpin
-  const leaders = assistant?.leaders;
-  const isLeader = (id: string) => !!leaders?.includes(id) && id !== assistant?.main;
+  // the leader conversations come first (#3623), the ones the owner unpinned after the pinned ones (#4331): the hub keeps
+  // that pin, so every browser and device orders the Directions the same
+  const leaders = directionOrder(assistant?.leaders, assistant?.leaders_unpinned);
+  const isLeader = (id: string) => leaders.includes(id) && id !== assistant?.main;
+  const isDirectionPinned = (id: string) => directionPinned(id, assistant?.leaders, assistant?.leaders_unpinned);
   const pinnedIds = pinOrder(leaders, localPins);
   const { pinned: pinnedConvs, recent } = sidebarConversations(assistant?.conversations ?? [], assistant?.main, pinnedIds, 5, activeKey.startsWith("j:") ? activeKey.slice(2) : undefined);
   // the leaders are the "Directions" group, under their direction's name (#3519, #3695); this browser's own pins stay
@@ -327,7 +329,7 @@ export function Sidebar({ route, onSearch, onNewAgent, onNavigate }: { route: Ro
             right={<SectionAdd icon="compose" label={t("sidebar.new_chat")} to={{ name: "persona-new" }} go={go} active={activeKey === "j:new"} />}
           >
             {directions.length > 0 && <SubHeading label={t("sidebar.directions")} />}
-            {directions.map((c) => conversationRow(c, directionLabel(directionNames, c.session_id, conversationTitle(c)), false))}
+            {directions.map((c) => conversationRow(c, directionLabel(directionNames, c.session_id, conversationTitle(c)), isDirectionPinned(c.session_id)))}
             {ownPinned.length > 0 && <PinnedHeading onMenu={(at) => setChatsMenu(at)} />}
             {ownPinned.map((c) => conversationRow(c, conversationTitle(c), true))}
             {directions.length > 0 && recent.length > 0 && <SubHeading label={t("sidebar.other_chats")} />}
@@ -342,7 +344,7 @@ export function Sidebar({ route, onSearch, onNewAgent, onNavigate }: { route: Ro
         {/* the phone's Agents page shows them already: the drawer over it doesn't build them twice */}
         {!(narrow && route.name === "agent-list") && <AgentsBlock reg={reg} hover={hover} activeKey={activeKey} go={go} onNewAgent={onNewAgent} onNavigate={onNavigate} foldable />}
       </div>
-      {convMenu && <ConversationRowMenu s={convMenu.s} main={convMenu.s.session_id === assistant?.main} pinned={pinnedIds.includes(convMenu.s.session_id)} leader={isLeader(convMenu.s.session_id)} anchor={convMenu.anchor} at={convMenu.at} onClose={() => setConvMenu(null)} />}
+      {convMenu && <ConversationRowMenu s={convMenu.s} main={convMenu.s.session_id === assistant?.main} pinned={isLeader(convMenu.s.session_id) ? isDirectionPinned(convMenu.s.session_id) : pinnedIds.includes(convMenu.s.session_id)} leader={isLeader(convMenu.s.session_id)} anchor={convMenu.anchor} at={convMenu.at} onClose={() => setConvMenu(null)} />}
       {chatsMenu && <Menu anchor={chatsMenu.anchor ?? null} point={chatsMenu.point} onClose={() => setChatsMenu(null)} align="right" width={200} header={t("sidebar.pinned_section")} items={pinnedSectionItems(localPinned)} />}
       {/* subscription rate-limit windows (#2432): nothing is drawn without data */}
       <SidebarUsage />

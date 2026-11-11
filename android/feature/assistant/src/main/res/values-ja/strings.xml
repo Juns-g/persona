@@ -131,7 +131,7 @@
     <string name="assistant_needs_you_agent">エージェント</string>
     <string name="assistant_pair_first">先にハブをペアリングしてください</string>
     <plurals name="assistant_show_all_recent">
-        <item quantity="other">すべて表示（%1$d件）</item>
+        <item quantity="other">すべてのチャット（%1$d）</item>
     </plurals>
     <plurals name="assistant_needs_you_more">
         <item quantity="other">受信トレイにあと%1$d件</item>

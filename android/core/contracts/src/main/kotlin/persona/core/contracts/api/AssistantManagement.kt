@@ -39,6 +39,11 @@ interface AssistantManagement {
      */
     suspend fun archiveConversation(session: SessionKey): Unit = throw UnsupportedOperationException("Archive unavailable")
     /**
+     * Pins or unpins a direction (PUT /api/v1/assistant/directions/{id}/pinned, #4331): the hub keeps it for every device
+     * (`assistant.leaders_unpinned`); an unpinned direction stays one, after the pinned ones.
+     */
+    suspend fun setDirectionPinned(session: SessionKey, pinned: Boolean): Unit = throw UnsupportedOperationException("Direction pins unavailable")
+    /**
      * Puts the main conversation away for a new one (POST /api/v1/assistant/main/new, hub feature `assistant_main_new`):
      * it is renamed and archived, and the next message to the main conversation starts a new one. [carrySummary] brings
      * what the old one left; [expect] is the main conversation on screen (a hub where another device replaced it since

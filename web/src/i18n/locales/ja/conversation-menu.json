@@ -16,5 +16,6 @@
   "end_confirm": "終了を確認",
   "ended": "チャットを終了しました。履歴は残ります",
   "end_failed": "チャットを終了できませんでした：{error}",
-  "actions": "チャットの操作"
+  "actions": "チャットの操作",
+  "pin_failed": "ピン留めを変更できませんでした：{error}"
 }

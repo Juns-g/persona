@@ -100,8 +100,14 @@ class AssistantTest {
         assertEquals(listOf(leadA, leadB), result.directions)
         assertEquals("Growth", result.names["lead-a"])
         assertEquals(listOf(mine), result.pinned)
-        assertEquals(setOf(leadB.key), result.pinnedDirections)
+        // every direction is pinned until the owner unpins it on the hub (#4331)
+        assertEquals(setOf(leadA.key, leadB.key), result.pinnedDirections)
         assertTrue(result.recent.isEmpty())
+        // unpinned: after the pinned ones, still a direction, and its menu offers Pin
+        val unpinned = conversationGroups(snapshot.copy(unpinnedLeaders = setOf("lead-a")), "", emptySet(), words)
+        assertEquals(listOf(leadB, leadA), unpinned.directions)
+        assertEquals(setOf(leadB.key), unpinned.pinnedDirections)
+        assertTrue(unpinned.recent.isEmpty())
         // a search finds a direction by its name
         assertEquals(listOf(leadA), conversationGroups(snapshot, "growth", emptySet(), words).directions)
         // no leaders: no group, as before
@@ -116,14 +122,20 @@ class AssistantTest {
         assertEquals(listOf(kept), result.recent)
     }
 
-    @Test fun theRecentGroupShowsThirtyThenTheRest() {
+    @Test fun directionOrderPutsTheUnpinnedLast() {
+        assertEquals(listOf("a", "b", "c"), directionOrder(listOf("a", "b", "c"), emptySet()))
+        assertEquals(listOf("b", "a", "c"), directionOrder(listOf("a", "b", "c"), setOf("c", "a")))
+        assertEquals(listOf("a"), directionOrder(listOf("a"), setOf("gone")))
+    }
+
+    @Test fun theOtherChatsShowFiveThenAllChats() {
         val recent = (1..45).map { Session(machineId = "m", sessionId = "s$it", title = "对话 $it") }
         val folded = recentRows(recent, query = "", showAll = false)
-        assertEquals(recent.take(30), folded.shown)
-        assertEquals(15, folded.hidden)
+        assertEquals(recent.take(5), folded.shown)
+        assertEquals(40, folded.hidden)
         assertEquals(recent, recentRows(recent, query = "", showAll = true).shown)
         assertEquals("a search lists everything it finds", 0, recentRows(recent, query = "对话", showAll = false).hidden)
-        assertEquals(0, recentRows(recent.take(30), query = "", showAll = false).hidden)
+        assertEquals(0, recentRows(recent.take(5), query = "", showAll = false).hidden)
     }
 
     @Test fun theHistoryRowMenu() {

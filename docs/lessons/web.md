@@ -848,3 +848,11 @@ supervised task spends most of its life stopped between rounds (`follow_up`: the
 is not done), so the owner saw one task out of four and asked what the others were doing. The #2920 Progress tray went the
 other way and listed every slot ever dispatched, closed ones included. "Open" is a property of the task (`done_at`,
 `start_error`, an open plan), not of its agent: filter on that, sort what needs the user first, and fold the closed ones.
+
+## A deploy is not seen until the open page checks for it (#4331)
+
+A sidebar change was deployed and checked with a fresh load, yet the owner's tab, open since before, kept the old build
+and its old sidebar: the service worker answers navigations with the new shell, but a single-page app that stays open
+never navigates again. "Deployed" meant new for new loads only. The page now compares the shell's entry script with its
+own and reloads when idle (docs/web/web.md "New versions"). When verifying a web deploy, also check a tab that was open
+before it, not only a fresh load.

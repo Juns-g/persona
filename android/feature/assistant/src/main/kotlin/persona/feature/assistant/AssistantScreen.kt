@@ -363,6 +363,19 @@ fun AssistantScreen(
             }
         }
     }
+    // A direction's pin is the hub's (#4331): the list is read again after, and a refusal says why.
+    fun pinDirection(session: Session, pinned: Boolean) {
+        val target = pageManagement ?: return
+        scope.launch {
+            try {
+                target.setDirectionPinned(session.key, pinned)
+                assistantAttempt { repository.refresh() }
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (error: Exception) {
+                if (feedback?.failure(error) != true) snackbar.showSnackbar(persona.core.designsystem.operationFeedback(error).text.resolve(resources))
+            }
+        }
+    }
     fun startNewConversation() {
         if (sending) return
         if (snapshot.mainSession == null) {
@@ -575,6 +588,7 @@ fun AssistantScreen(
             }) else null,
             onCopy = { copyId(it.key) },
             onArchive = if (pageManagement != null && !demo) ::archive else null,
+            onDirectionPin = if (pageManagement != null && !demo) ::pinDirection else null,
             showAllRecent = showAllRecent,
             onShowAllRecent = { showAllRecent = true },
             autoOpen = autoOpen, onAutoOpen = { autoOpen = it },
@@ -926,6 +940,8 @@ internal fun AssistantDrawer(
     onNew: () -> Unit, onHome: () -> Unit, onSettings: () -> Unit,
     onPin: ((Session) -> Unit)? = null, onUnpinAll: (() -> Unit)? = null, onCopy: (Session) -> Unit = {},
     onArchive: ((Session) -> Unit)? = null,
+    /** Pins or unpins a direction on the hub (#4331); null: the menu has no Pin / Unpin for directions. */
+    onDirectionPin: ((Session, Boolean) -> Unit)? = null,
     showAllRecent: Boolean = false, onShowAllRecent: () -> Unit = {},
     autoOpen: Boolean = false, onAutoOpen: (Boolean) -> Unit = {},
     onTodos: (() -> Unit)? = null, todoCount: Int = 0, showTodos: Boolean = true,
@@ -992,8 +1008,8 @@ internal fun AssistantDrawer(
             } }
             if (drawer) item { JDivider(Modifier.padding(vertical = Tokens.Space.s)) }
             if (!drawer || searchVisible || query.isNotBlank()) item { JSearchField(query, onQuery, stringResource(R.string.assistant_search_chats)) }
-            // The leader conversations, under their directions' names: the group says what they are (no Pin here; Unpin
-            // only for one pinned before it became a direction).
+            // The leader conversations, under their directions' names; their Pin / Unpin is the hub's (#4331): unpinned,
+            // one stays here, after the pinned ones.
             if (groups.directions.isNotEmpty()) item(key = "directions-header") {
                 JSectionHeader(stringResource(R.string.assistant_directions), count = groups.directions.size)
             }
@@ -1003,7 +1019,7 @@ internal fun AssistantDrawer(
                     onOpen = { onOpen(session.key) }, onEnd = onEnd?.let { action -> { action(session) } },
                     onCopy = { onCopy(session) }, onArchive = onArchive?.let { action -> { action(session) } },
                     pinned = session.key in groups.pinnedDirections,
-                    onPin = onPin?.takeIf { session.key in groups.pinnedDirections }?.let { pin -> { pin(session) } },
+                    onPin = onDirectionPin?.let { pin -> { pin(session, session.key !in groups.pinnedDirections) } },
                     named = groups.names[session.sessionId])
             }
             if (groups.pinned.isNotEmpty()) item(key = "pinned-header") {
@@ -1023,7 +1039,7 @@ internal fun AssistantDrawer(
                     pinned = true, onPin = onPin?.let { pin -> { pin(session) } }, onCopy = { onCopy(session) },
                     onArchive = onArchive?.let { action -> { action(session) } })
             }
-            // The most recent 30, then one row for the rest (a search shows everything it finds).
+            // The most recent 5, then one All chats row for the rest (a search shows everything it finds).
             val recent = recentRows(groups.recent, query, showAllRecent)
             val recentCount = recent.shown.size + if (recent.hidden > 0) 1 else 0
             if (groups.recent.isNotEmpty()) item(key = "recent-header") {

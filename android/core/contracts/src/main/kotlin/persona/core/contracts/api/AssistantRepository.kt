@@ -15,6 +15,8 @@ data class AssistantSnapshot(
      * order: the drawer's Directions group. Empty when there are none or from an older hub.
      */
     val leaders: List<String> = emptyList(),
+    /** The leaders the owner unpinned (`assistant.leaders_unpinned`, #4331): still Directions, after the pinned ones. */
+    val unpinnedLeaders: Set<String> = emptySet(),
     /** Each direction's name by leader conversation id (`GET /api/v1/assistant/leaders`), shown instead of its title. */
     val directionNames: Map<String, String> = emptyMap(),
 )

@@ -17,6 +17,8 @@ export interface ConversationMenuDeps {
   unarchive: (s: Session) => Promise<unknown>;
   end: (s: Session) => Promise<unknown>;
   refresh: () => Promise<unknown>;
+  /** Pins or unpins a direction (a leader conversation): the hub keeps it for every device (#4331). */
+  pinDirection: (s: Session, pinned: boolean) => Promise<unknown>;
   copy: (text: string) => unknown;
   notify: (text: string, tone: "ok" | "error", action?: ToastAction) => void;
 }
@@ -27,6 +29,7 @@ export const conversationMenuDeps: ConversationMenuDeps = {
   unarchive: (s) => api(`/assistant/conversations/${enc(s.session_id)}/unarchive`, { method: "POST", json: {} }),
   end: (s) => api(`${sessionPath(s.machine_id, s.session_id)}/close`, { method: "POST" }),
   refresh: () => refreshAssistant(),
+  pinDirection: (s, pinned) => api(`/assistant/directions/${enc(s.session_id)}/pinned`, { method: "PUT", json: { pinned } }),
   copy: copyText,
   notify: (text, tone, action) => toast(text, tone, action),
 };
@@ -46,13 +49,23 @@ async function undoArchive(s: Session, title: string, deps: ConversationMenuDeps
   reread(deps);
 }
 
-/** `leader`: a leader conversation, pinned by the hub on every browser, so it has no Pin / Unpin of its own. */
+async function pinDirection(s: Session, pinned: boolean, deps: ConversationMenuDeps) {
+  try {
+    await deps.pinDirection(s, pinned);
+  } catch (e) {
+    deps.notify(t("conversation-menu.pin_failed", { error: errorText(e) }), "error");
+  }
+  reread(deps);
+}
+
+/** `leader`: a leader conversation (a direction). Its Pin / Unpin is the hub's, for every device (#4331): unpinned, it
+ *  stays under Directions, after the pinned ones. Any other conversation's pin is this browser's. */
 export function conversationMenuItems(s: Session, o: { main: boolean; pinned: boolean; leader?: boolean }, deps: ConversationMenuDeps = conversationMenuDeps): MenuItem[] {
   const title = sessionTitle(s);
   const own: MenuItem[] = o.main
     ? []
     : [
-        ...(o.leader ? [] : [{ key: "pin", label: o.pinned ? t("conversation-menu.unpin") : t("conversation-menu.pin"), icon: "pin" as const, accel: "p", onSelect: () => togglePinnedConversation(s.session_id) }]),
+        { key: "pin", label: o.pinned ? t("conversation-menu.unpin") : t("conversation-menu.pin"), icon: "pin" as const, accel: "p", onSelect: () => (o.leader ? void pinDirection(s, !o.pinned, deps) : togglePinnedConversation(s.session_id)) },
         {
           key: "rename",
           label: t("conversation-menu.rename"),

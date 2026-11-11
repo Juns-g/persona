@@ -2,7 +2,9 @@
 // `assistant.leaders` set, a fresh browser (nothing in localStorage) shows them first among the Persona chats, in the
 // hub's order, as the 方向 (Directions) group under each direction's name from GET /api/v1/assistant/leaders, with no
 // 主管 label and no 置顶 heading; the rest are 其他对话; New chat is the compose icon on the section's title, not a row;
-// a chat pinned in this browser comes after the directions under 置顶; a leader's menu has no Pin / Unpin.
+// a chat pinned in this browser comes after the directions under 置顶; 其他对话 shows at most 5 rows, then 全部对话; a
+// direction's menu has 取消置顶 (#4331), which the hub keeps: it moves after the pinned ones, still under 方向, and 置顶
+// puts it back.
 //
 // Needs the web page against the fake hub with leaders, and Chrome (or any Chromium through --executable):
 //
@@ -113,12 +115,39 @@ try {
     await page.keyboard.press("Escape");
     return items;
   };
-  const leadMenu = await menuOf(leaders[0]);
-  if (leadMenu.some((x) => x.includes("置顶"))) fail(`a leader's menu has Pin / Unpin: ${leadMenu.join(" | ")}`);
+  const others5 = ids.slice(leaders.length + 1);
+  if (others5.length > 5) fail(`其他对话 shows ${others5.length} rows, more than 5`);
+  if (!(await page.locator('aside a[href="/history"]', { hasText: "全部对话" }).count())) fail("no 全部对话 entry under 其他对话");
+  ok(`其他对话 shows ${others5.length} rows, then 全部对话`);
   const localMenu = await menuOf(local);
   if (!localMenu.some((x) => x.includes("取消置顶"))) fail(`the local pin's menu has no Unpin: ${localMenu.join(" | ")}`);
-  ok("a leader's menu has no Pin / Unpin; the local pin's has Unpin");
   if (shots) await page.screenshot({ path: join(shots, "web-leader-pins-wide-with-local-pin.png") });
+
+  // a direction: 取消置顶 through the hub, after the pinned ones but still under 方向; 置顶 puts it back
+  const pick = async (id, label) => {
+    await page.locator(`aside a[href^="/persona/${id}"]`).first().click({ button: "right" });
+    const menu = page.locator('[role="menu"]').last();
+    await menu.waitFor({ state: "visible", timeout: 5000 });
+    if (shots && label === "取消置顶") await page.screenshot({ path: join(shots, "web-direction-menu-unpin.png") });
+    await menu.locator('[role="menuitem"]', { hasText: new RegExp(`^${label}`) }).first().click();
+  };
+  await pick(leaders[0], "取消置顶");
+  const moved = [...leaders.slice(1), leaders[0]];
+  await page.waitForFunction(([want]) => {
+    const got = [...document.querySelectorAll('aside a[href^="/persona/"]')].map((a) => a.getAttribute("href").slice("/persona/".length).split("?")[0]).filter((id) => id !== "new");
+    return JSON.stringify(got.slice(0, want.length)) === JSON.stringify(want);
+  }, [moved], { timeout: 5000 }).catch(async () => fail(`unpinned, the first direction did not move after the others: ${(await rowIds(page)).join(",")}`));
+  if (JSON.stringify((await headings(page))[0]) !== JSON.stringify("方向")) fail("unpinned, the direction left 方向");
+  if (!(await menuOf(leaders[0])).some((x) => x.startsWith("置顶"))) fail("an unpinned direction's menu has no 置顶");
+  if (!(await hub("/assistant")).leaders_unpinned?.includes(leaders[0])) fail("the hub did not keep the unpin");
+  ok("a direction's 取消置顶 goes to the hub: it moves after the pinned ones, still under 方向");
+  if (shots) await page.screenshot({ path: join(shots, "web-direction-unpinned.png") });
+  await pick(leaders[0], "置顶");
+  await page.waitForFunction(([want]) => {
+    const got = [...document.querySelectorAll('aside a[href^="/persona/"]')].map((a) => a.getAttribute("href").slice("/persona/".length).split("?")[0]).filter((id) => id !== "new");
+    return JSON.stringify(got.slice(0, want.length)) === JSON.stringify(want);
+  }, [leaders], { timeout: 5000 }).catch(async () => fail(`pinned again, the order is ${(await rowIds(page)).join(",")}`));
+  ok("置顶 puts it back first");
   await ctx.close();
 } finally {
   await browser.close();

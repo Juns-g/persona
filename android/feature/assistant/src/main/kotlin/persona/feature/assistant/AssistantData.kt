@@ -26,13 +26,13 @@ import java.util.UUID
 
 /**
  * [auto]: the conversations the hub opened by itself (#3264), out of [recent] while nothing is searched. [directions]: the
- * leader conversations (`assistant.leaders`), first, in the hub's order, out of [pinned] and [recent]; [names] what each
- * direction is called, by session id, shown instead of its title.
+ * leader conversations (`assistant.leaders`), first, out of [pinned] and [recent]: the pinned ones in the hub's order, then
+ * the ones the owner unpinned (#4331); [names] what each direction is called, by session id, shown instead of its title.
  */
 internal data class ConversationGroups(
     val main: Session?, val pinned: List<Session>, val recent: List<Session>, val auto: List<Session> = emptyList(),
     val directions: List<Session> = emptyList(), val names: Map<String, String> = emptyMap(),
-    /** Directions also pinned (before they became one): their menu keeps Unpin, so the pin can still go. */
+    /** The directions the hub has pinned (all but `assistant.leaders_unpinned`): their menu has Unpin, the others Pin. */
     val pinnedDirections: Set<SessionKey> = emptySet(),
 )
 
@@ -66,9 +66,10 @@ internal fun conversationGroups(
                 it.lastText.orEmpty().contains(query.trim(), ignoreCase = true))
     }.map { it to it.updated } // each time parsed once, not on every comparison
         .sortedWith(compareByDescending<Pair<Session, java.time.Instant?>> { it.second }.thenBy { it.first.key.path }).map { it.first }
-    // The leaders are the Directions group, under their names (a search matches the name too), in the hub's order.
+    // The leaders are the Directions group, under their names (a search matches the name too): the pinned ones in the
+    // hub's order, then the unpinned ones (#4331; unpinning only orders the group).
     val names = snapshot.directionNames
-    val directions = snapshot.leaders.mapNotNull { id ->
+    val directions = directionOrder(snapshot.leaders, snapshot.unpinnedLeaders).mapNotNull { id ->
         snapshot.conversations.firstOrNull { it.sessionId == id && it.key != snapshot.mainSession && !it.archived }
     }.filter { query.isBlank() || it in matches || names[it.sessionId].orEmpty().contains(query.trim(), ignoreCase = true) }
     val isDirection = directions.map { it.key }.toSet()
@@ -80,11 +81,15 @@ internal fun conversationGroups(
         matches.filter { it.key != snapshot.mainSession && it.key in pinned && it.key !in isDirection },
         if (searching) others else others.filter { it.autoOrigin() == null },
         if (searching) emptyList() else others.filter { it.autoOrigin() != null },
-        directions, names, directions.map { it.key }.filter { it in pinned }.toSet())
+        directions, names, directions.filter { it.sessionId !in snapshot.unpinnedLeaders }.map { it.key }.toSet())
 }
 
-/** How many recent conversations the history lists before folding the rest into "See all N". */
-internal const val RecentShown = 30
+/** [leaders] with the pinned ones first, then the [unpinned] ones, each part in the hub's order (#4331). */
+internal fun directionOrder(leaders: List<String>, unpinned: Set<String>): List<String> =
+    leaders.filter { it !in unpinned } + leaders.filter { it in unpinned }
+
+/** How many recent conversations the drawer lists before one "All chats" row for the rest (#4331, as the web and iOS). */
+internal const val RecentShown = 5
 
 internal data class RecentRows(val shown: List<Session>, val hidden: Int)
 

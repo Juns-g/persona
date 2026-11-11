@@ -711,6 +711,8 @@ export interface AssistantInfo {
   /** The side conversations the user made leaders (docs/assistant/unified-entry.md "Leader conversations"): absent
    *  when there are none or from an older hub. The sidebar shows them first among the Persona chats, as pinned. */
   leaders?: string[];
+  /** The leaders the owner unpinned (#4331): still under Directions, after the pinned ones. Absent: all pinned. */
+  leaders_unpinned?: string[];
   conversations: Session[];
 }
 

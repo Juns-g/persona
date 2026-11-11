@@ -16,6 +16,11 @@ class DirectionNamesTest {
         assertEquals(emptyList<String>(), leadersOf(json("""{"main": "m"}""")))
     }
 
+    @Test fun unpinnedLeadersAreReadFromTheSettings() {
+        assertEquals(setOf("a"), unpinnedLeadersOf(json("""{"leaders": ["a", "b"], "leaders_unpinned": ["a", ""]}""")))
+        assertEquals(emptySet<String>(), unpinnedLeadersOf(json("""{"leaders": ["a"]}""")))
+    }
+
     @Test fun namesSkipEndedAndBlankOnes() {
         val names = directionNamesOf(json("""{"leaders": [
             {"id": "a", "name": " Product "},

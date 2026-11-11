@@ -105,6 +105,10 @@ class HttpAssistantManagement private constructor(
         require(session.sessionId.isNotBlank())
         assistant("POST", "conversations", session.sessionId, "archive", body = buildJsonObject { })
     }
+    override suspend fun setDirectionPinned(session: SessionKey, pinned: Boolean) {
+        require(session.sessionId.isNotBlank())
+        assistant("PUT", "directions", session.sessionId, "pinned", body = buildJsonObject { put("pinned", pinned) })
+    }
     override suspend fun newMainConversation(carrySummary: Boolean, expect: String?): NewMainResult {
         val body = buildJsonObject {
             put("carry", if (carrySummary) "summary" else "none")

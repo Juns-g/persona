@@ -62,6 +62,7 @@ class RealAssistantRepository(
             if (machine.isNotEmpty() && main.isNotEmpty()) SessionKey(machine, main) else null,
             conversations, request.manager, request.owner,
             leaders = leadersOf(data),
+            unpinnedLeaders = unpinnedLeadersOf(data),
         )
     }
 
@@ -242,6 +243,10 @@ internal fun leadersOf(data: JsonObject): List<String> {
     val main = data.string("main")
     return data.array("leaders").mapNotNull { (it as? JsonPrimitive)?.contentOrNull?.takeIf { id -> id.isNotEmpty() && id != main } }
 }
+
+/** `assistant.leaders_unpinned` (#4331): the leaders the owner unpinned. */
+internal fun unpinnedLeadersOf(data: JsonObject): Set<String> =
+    data.array("leaders_unpinned").mapNotNull { (it as? JsonPrimitive)?.contentOrNull?.takeIf(String::isNotEmpty) }.toSet()
 
 /** `GET /api/v1/assistant/leaders`'s names by leader conversation id: current directions with a name only. */
 internal fun directionNamesOf(data: JsonObject): Map<String, String> = data.array("leaders").mapNotNull { it as? JsonObject }

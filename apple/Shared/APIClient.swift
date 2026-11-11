@@ -1107,8 +1107,11 @@ nonisolated struct APIClient: Sendable {
         /// conversations"), in the hub's order; nil when there are none or from an older hub. The sidebar shows them as
         /// the Directions group, under the names `assistantLeaders()` gives.
         var leaders: [String]?
+        /// The leaders the owner unpinned (#4331): still Directions, listed after the pinned ones; nil: all pinned.
+        var leadersUnpinned: [String]?
         enum CodingKeys: String, CodingKey {
             case launcher, cwd, conversations, timezone, main, leaders
+            case leadersUnpinned = "leaders_unpinned"
             case machineID = "machine_id", notes = "notes_effective", mainTasksQuiet = "main_tasks_quiet"
             case meetingAttendanceDefault = "meeting_attendance_default"
         }
@@ -1120,6 +1123,12 @@ nonisolated struct APIClient: Sendable {
         var id: String
         var name: String?
         var ended: Bool?
+    }
+    /// Pins or unpins a direction (#4331, `PUT /api/v1/assistant/directions/{id}/pinned`): the hub keeps it for every
+    /// device, and an unpinned one stays a direction, after the pinned ones.
+    func setDirectionPinned(_ id: String, pinned: Bool) async throws {
+        struct Body: Encodable { var pinned: Bool }
+        _ = try await request("PUT", "/api/v1/assistant/directions/\(id)/pinned", body: Body(pinned: pinned))
     }
     /// The directions' names by leader conversation id: the current ones with a name (ended ones left out).
     func directionNames() async throws -> [String: String] {

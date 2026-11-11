@@ -23,6 +23,7 @@ function deps(over: Partial<ConversationMenuDeps> = {}) {
     unarchive: async (s) => void calls.push(`unarchive:${s.session_id}`),
     end: async (s) => void calls.push(`end:${s.session_id}`),
     refresh: async () => void calls.push("refresh"),
+    pinDirection: async (s, pinned) => void calls.push(`pin-direction:${s.session_id}:${pinned}`),
     copy: (text) => void calls.push(`copy:${text}`),
     notify: (text, tone, action) => {
       calls.push(`${tone}:${text}`);
@@ -58,6 +59,23 @@ describe("a Persona conversation's sidebar menu (iOS AssistantSidebar)", () => {
     void pinnedSectionItems(1)[0].onSelect();
     expect(getPinnedConversations()).toEqual([]);
     expect(pinnedSectionItems(0)).toEqual([]);
+  });
+
+  it("pins and unpins a direction through the hub, not in this browser", async () => {
+    const { d, calls } = deps();
+    expect(conversationMenuItems(conv(), { main: false, pinned: true, leader: true }, d).map((i) => i.label)).toEqual(["取消置顶", "重命名…", "归档", "拷贝会话 ID", "结束…"]);
+    await conversationMenuItems(conv(), { main: false, pinned: true, leader: true }, d).find((i) => i.key === "pin")!.onSelect();
+    await vi.waitFor(() => expect(calls).toEqual(["pin-direction:c1:false", "refresh"]));
+    calls.length = 0;
+    await conversationMenuItems(conv(), { main: false, pinned: false, leader: true }, d).find((i) => i.key === "pin")!.onSelect();
+    await vi.waitFor(() => expect(calls).toEqual(["pin-direction:c1:true", "refresh"]));
+    expect(getPinnedConversations()).toEqual([]);
+  });
+
+  it("says so when the hub refuses a direction's pin", async () => {
+    const { d, calls } = deps({ pinDirection: async () => { throw new Error("busy"); } });
+    await conversationMenuItems(conv(), { main: false, pinned: true, leader: true }, d).find((i) => i.key === "pin")!.onSelect();
+    await vi.waitFor(() => expect(calls).toEqual(["error:没能改置顶：busy", "refresh"]));
   });
 
   it("renames, archives, copies the id and ends through the hub, then reads the list again", async () => {

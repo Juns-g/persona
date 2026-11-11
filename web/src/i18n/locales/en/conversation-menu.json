@@ -16,5 +16,6 @@
   "end_confirm": "Confirm end",
   "ended": "Chat ended; its history is kept",
   "end_failed": "Couldn't end the chat: {error}",
-  "actions": "Chat actions"
+  "actions": "Chat actions",
+  "pin_failed": "Couldn't change the pin: {error}"
 }

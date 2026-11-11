@@ -134,8 +134,8 @@
     <string name="assistant_needs_you_agent">Agent</string>
     <string name="assistant_pair_first">Pair a hub first</string>
     <plurals name="assistant_show_all_recent">
-        <item quantity="one">See all %1$d</item>
-        <item quantity="other">See all %1$d</item>
+        <item quantity="one">All chats (%1$d)</item>
+        <item quantity="other">All chats (%1$d)</item>
     </plurals>
     <plurals name="assistant_needs_you_more">
         <item quantity="one">%1$d more in Inbox</item>

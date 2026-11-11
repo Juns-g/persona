@@ -979,10 +979,37 @@ final class AppModel {
         directionNames = names
     }
 
-    /// The assistant's leader conversations (the sidebar's Directions), in the hub's order, never the main one.
+    /// The assistant's leader conversations (the sidebar's Directions), never the main one: the pinned ones first, then
+    /// the ones the owner unpinned (#4331), each in the hub's order.
     var assistantLeaders: [String] {
         let main = assistantConfig?.main
-        return (assistantConfig?.leaders ?? []).filter { !$0.isEmpty && $0 != main }
+        let all = (assistantConfig?.leaders ?? []).filter { !$0.isEmpty && $0 != main }
+        return AssistantDirections.order(all, unpinned: assistantConfig?.leadersUnpinned ?? [])
+    }
+
+    /// Whether direction `id` is pinned: a leader the owner has not unpinned.
+    func isDirectionPinned(_ id: String) -> Bool {
+        (assistantConfig?.leaders ?? []).contains(id) && !(assistantConfig?.leadersUnpinned ?? []).contains(id)
+    }
+
+    /// Pins or unpins a direction on the hub (#4331): shown at once, put back with the error when the hub refuses.
+    func setDirectionPinned(_ id: String, _ pinned: Bool) async {
+        guard let api, var cfg = assistantConfig else { return }
+        let before = cfg.leadersUnpinned
+        var off = (before ?? []).filter { $0 != id }
+        if !pinned { off.append(id) }
+        cfg.leadersUnpinned = off.isEmpty ? nil : off
+        assistantConfig = cfg
+        Haptics.tap()
+        do {
+            try await api.setDirectionPinned(id, pinned: pinned)
+        } catch {
+            if showsPage(of: api), var now = assistantConfig {
+                now.leadersUnpinned = before
+                assistantConfig = now
+            }
+            show(error)
+        }
     }
 
     /// The Couldn't Load Settings retry: the page flips back to Reading at once, and repeated taps share the one request (#4200).
@@ -3406,5 +3433,14 @@ nonisolated struct AssistantLists: Equatable {
         open = mine.filter { $0.archived != true }
         archived = mine.filter { $0.archived == true }
         health = all.filter { $0.isHealth && $0.archived != true && owned($0, by: \.roster.defaultID) }
+    }
+}
+
+/// The sidebar's Directions order (#4331): pinning only orders the group, so an unpinned direction stays one.
+nonisolated enum AssistantDirections {
+    /// `leaders` with the pinned ones first, then the `unpinned` ones, each part in the hub's order.
+    static func order(_ leaders: [String], unpinned: [String]) -> [String] {
+        let off = Set(unpinned)
+        return leaders.filter { !off.contains($0) } + leaders.filter { off.contains($0) }
     }
 }

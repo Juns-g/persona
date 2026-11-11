@@ -16,5 +16,6 @@
   "end_confirm": "确认结束",
   "ended": "已结束对话，记录仍保留",
   "end_failed": "没能结束对话：{error}",
-  "actions": "对话的操作"
+  "actions": "对话的操作",
+  "pin_failed": "没能改置顶：{error}"
 }

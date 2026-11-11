@@ -678,6 +678,13 @@ if (typeof window !== "undefined") {
   window.addEventListener("offline", () => set({ link: { ...state.link, networkUp: false } }));
 }
 
+const helloHooks = new Set<() => void>();
+/** Runs `f` on every hello (lib/new-version.ts asks for the shell then); loaded after the first screen, so it is not in it. */
+export function onHello(f: () => void): () => void {
+  helloHooks.add(f);
+  return () => void helloHooks.delete(f);
+}
+
 // The assistant's live updates about the page itself rather than one conversation: only the shown manager's count.
 const PAGE_EVENTS = new Set(["assistant_schedule"]);
 
@@ -685,6 +692,7 @@ function onMessage(msg: Record<string, unknown>) {
   cursor = msg.type === "hello" ? afterHello(cursor, msg) : afterEvent(cursor, msg);
   switch (msg.type) {
     case "hello": {
+      helloHooks.forEach((f) => f()); // e.g. a hub that came back may serve a new web build (lib/new-version.ts)
       setCompatibilityFeatures(Array.isArray(msg.features) ? msg.features as string[] : []);
       const mesh = (msg.mesh as { hubs?: MeshHub[] } | undefined)?.hubs;
       set({

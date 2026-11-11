@@ -151,6 +151,17 @@ struct AssistantTopBarTests {
         #expect(AssistantSidebarGroups.directions(all, leaders: [], main: main).isEmpty)
     }
 
+    /// Unpinning a direction (#4331) only moves it after the pinned ones, still in the hub's order within each part; the
+    /// hub's `leaders_unpinned` is decoded from the assistant's settings.
+    @Test func unpinnedDirectionsFollowThePinnedOnes() throws {
+        #expect(AssistantDirections.order(["a", "b", "c", "d"], unpinned: []) == ["a", "b", "c", "d"])
+        #expect(AssistantDirections.order(["a", "b", "c", "d"], unpinned: ["c", "a"]) == ["b", "d", "a", "c"])
+        #expect(AssistantDirections.order(["a", "b"], unpinned: ["gone"]) == ["a", "b"])
+        let raw = #"{"machine_id":"hub","launcher":"claude","cwd":"/home/me","conversations":[],"leaders":["a","b"],"leaders_unpinned":["a"]}"#
+        let st = try JSON.decoder.decode(APIClient.AssistantState.self, from: Data(raw.utf8))
+        #expect(st.leadersUnpinned == ["a"])
+    }
+
     /// A direction's name comes from GET /api/v1/assistant/leaders: current ones with a name only.
     @Test func directionNamesSkipEndedAndBlank() {
         let names = APIClient.directionNames([

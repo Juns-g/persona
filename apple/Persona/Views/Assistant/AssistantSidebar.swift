@@ -742,8 +742,8 @@ struct AssistantSidebar: View {
     /// Conversations pinned on this phone (session ids, comma-separated); the main conversation always is.
     @StoredValue("assistant.pinned") private var pinnedRaw = ""
 
-    /// Recent shows this many until View All.
-    private static let recentCount = 30
+    /// Other Chats shows the latest 5, then All Chats (#4331, as on the web and Android).
+    private static let recentCount = 5
 
     private var pinnedIDs: Set<String> { Set(pinnedRaw.split(separator: ",").map(String.init)) }
 
@@ -1227,7 +1227,21 @@ struct AssistantSidebar: View {
             // Right under Recent's name, where a closed one still shows that one waits.
             if !split.auto.isEmpty { autoGroup(split) }
             ForEach(showAll ? rest : Array(rest.prefix(Self.recentCount))) { row($0) }
-            if rest.count > Self.recentCount {
+            if split.supported {
+                // the latest 5, then All Chats (#4331): the full list with its search, as the web's 全部对话 and Android's
+                Button { autoList = AutoConversationsRoute(source: nil) } label: {
+                    Label("All Chats", systemImage: Theme.Icon.list)
+                        .font(Theme.Font.secondary)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .padding(.horizontal, Theme.Space.m)
+                        .padding(.vertical, Theme.Space.m)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(.rect)
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("sidebar-all-chats")
+            } else if rest.count > Self.recentCount { // a hub without the full list: unfold here, as before
                 Button {
                     withAnimation(Theme.Motion.standard) { showAll.toggle() }
                 } label: {
@@ -1482,8 +1496,14 @@ struct AssistantSidebar: View {
         .contextMenu {
             if isMain { MainConversationMenu(key: s.key) } // Compact context, New Main Chat… (#1762)
             if !isMain {
-                Button { togglePin(s) } label: {
-                    isPinned(s) ? Label("Unpin [Personal Agent List View c92179]", systemImage: Theme.Icon.unpin) : Label("Pin [Personal Agent List View 173f88]", systemImage: Theme.Icon.pin)
+                // A direction's pin is the hub's, for every device (#4331): unpinned, it stays under Directions, after
+                // the pinned ones. Any other conversation's pin is this phone's.
+                let direction = model.assistantLeaders.contains(s.sessionID)
+                let pinned = direction ? model.isDirectionPinned(s.sessionID) : isPinned(s)
+                Button {
+                    if direction { Task { await model.setDirectionPinned(s.sessionID, !pinned) } } else { togglePin(s) }
+                } label: {
+                    pinned ? Label("Unpin [Personal Agent List View c92179]", systemImage: Theme.Icon.unpin) : Label("Pin [Personal Agent List View 173f88]", systemImage: Theme.Icon.pin)
                 }
             }
             if !isMain {

@@ -1554,6 +1554,7 @@ if os.environ.get("MOCK_ORIGINS") == "1":
 # /api/v1/assistant lists them in `leaders`; GET /api/v1/assistant/leaders names each direction (#3695), and the web
 # sidebar shows them first among the Persona chats as the "Directions" group under those names, on any browser.
 MOCK_LEADERS = []
+MOCK_LEADERS_UNPINNED = []  # PUT /api/v1/assistant/directions/{id}/pinned (#4331): the ones the owner unpinned
 MOCK_DIRECTION_NAMES = {}
 if os.environ.get("MOCK_LEADERS") == "1":
     for i, (title, name, minutes, last) in enumerate([  # i18n-ignore: the hub's own titles and names
@@ -1891,6 +1892,8 @@ def assistant_state(space="", archived=False):
         out["meeting_attendance_default"] = cfg["meeting_attendance_default"]
     if MOCK_LEADERS and not space:
         out["leaders"] = MOCK_LEADERS
+        if MOCK_LEADERS_UNPINNED:
+            out["leaders_unpinned"] = list(MOCK_LEADERS_UNPINNED)
     return out
 
 
@@ -17932,6 +17935,14 @@ class H(BaseHTTPRequestHandler):
         if p.startswith("/api/v1/sessions/") and p.endswith("/seen"):
             mark_seen(p.split("/")[5])
             return self.send_json({"ok": True})
+        if p.startswith("/api/v1/assistant/directions/") and p.endswith("/pinned") and self.command == "PUT":  # #4331
+            lead = p.split("/")[5]
+            body = json.loads(self.last_body or b"{}")
+            if lead not in MOCK_LEADERS: return self.send_json({"error": "no such direction"}, 404)
+            if not isinstance(body.get("pinned"), bool): return self.send_json({"error": 'body must be {"pinned": true|false}'}, 400)
+            if lead in MOCK_LEADERS_UNPINNED: MOCK_LEADERS_UNPINNED.remove(lead)
+            if not body["pinned"]: MOCK_LEADERS_UNPINNED.append(lead)
+            return self.send_json({"pinned": body["pinned"]})
         if p == "/api/v1/pins" and self.command == "PUT":  # the hub keeps them (the reply is what it kept)
             body = json.loads(self.last_body or b"{}")
             PINS.update(spaces=list(body.get("spaces") or []), sessions=list(body.get("sessions") or []))
