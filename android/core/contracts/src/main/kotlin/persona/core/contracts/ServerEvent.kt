@@ -217,7 +217,7 @@ data class ExtensionOperationEvent(val operation: persona.core.contracts.api.Ext
 data class ExtensionAuthEvent(val extension: String, val auth: persona.core.contracts.api.ExtensionAuth, val manager: String? = null) : ServerEvent
 
 /**
- * The direction tree changed (#4352, docs/protocol/protocol.md "Broadcasts"): a to-do, an Agent's session, a direction or
+ * The direction tree changed (#4352, docs/assistant/unified-entry.md "The direction tree"): a to-do, an Agent's session, a direction or
  * its name moved, so a drawer that is open follows a leader made, ended or renamed on another device at once. No
  * payload: the clients read `GET /api/v1/assistant/directions/tree` again (the default manager's alone).
  */
