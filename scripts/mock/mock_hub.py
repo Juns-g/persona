@@ -1554,7 +1554,6 @@ if os.environ.get("MOCK_ORIGINS") == "1":
 # /api/v1/assistant lists them in `leaders`; GET /api/v1/assistant/leaders names each direction (#3695), and the web
 # sidebar shows them first among the Persona chats as the "Directions" group under those names, on any browser.
 MOCK_LEADERS = []
-MOCK_LEADERS_UNPINNED = []  # PUT /api/v1/assistant/directions/{id}/pinned (#4331): the ones the owner unpinned
 MOCK_DIRECTION_NAMES = {}
 if os.environ.get("MOCK_LEADERS") == "1":
     for i, (title, name, minutes, last) in enumerate([  # i18n-ignore: the hub's own titles and names
@@ -1570,11 +1569,18 @@ if os.environ.get("MOCK_LEADERS") == "1":
         MOCK_DIRECTION_NAMES[c["session_id"]] = name
 
 
+# Each leader's open tasks Working and Waiting on you (#4331, assistant/direction_counts.go), synthetic.
+MOCK_LEADER_COUNTS = [{"working": 2, "needs_you": 1}, {"working": 1, "needs_you": 0}, {"working": 0, "needs_you": 0},
+                      {"working": 0, "needs_you": 2}]
+
+
 def mock_leaders_list():
-    """GET /api/v1/assistant/leaders as the hub lists it (assistant/directions.go): each leader with its direction's name."""
+    """GET /api/v1/assistant/leaders as the hub lists it (assistant/directions.go): each leader with its direction's name
+    and its counts (direction_counts.go)."""
     titles = {c["session_id"]: c.get("title", "") for c in ASSISTANT}
     return {"leaders": [{"id": sid, "title": titles.get(sid, ""), "name": MOCK_DIRECTION_NAMES.get(sid, ""), "by": "user",
-                         "at": "2026-11-10T08:00:00Z"} for sid in MOCK_LEADERS]}
+                         "at": "2026-11-10T08:00:00Z", "counts": MOCK_LEADER_COUNTS[i % len(MOCK_LEADER_COUNTS)]}
+                        for i, sid in enumerate(MOCK_LEADERS)]}
 
 # The health space (docs/assistant/health.md): its conversations run in a directory of their own and carry space "health"; they
 # are listed by GET /api/v1/assistant?space=health only, and its memory is its own (?space=health).
@@ -1892,8 +1898,6 @@ def assistant_state(space="", archived=False):
         out["meeting_attendance_default"] = cfg["meeting_attendance_default"]
     if MOCK_LEADERS and not space:
         out["leaders"] = MOCK_LEADERS
-        if MOCK_LEADERS_UNPINNED:
-            out["leaders_unpinned"] = list(MOCK_LEADERS_UNPINNED)
     return out
 
 
@@ -17935,14 +17939,18 @@ class H(BaseHTTPRequestHandler):
         if p.startswith("/api/v1/sessions/") and p.endswith("/seen"):
             mark_seen(p.split("/")[5])
             return self.send_json({"ok": True})
-        if p.startswith("/api/v1/assistant/directions/") and p.endswith("/pinned") and self.command == "PUT":  # #4331
-            lead = p.split("/")[5]
-            body = json.loads(self.last_body or b"{}")
-            if lead not in MOCK_LEADERS: return self.send_json({"error": "no such direction"}, 404)
-            if not isinstance(body.get("pinned"), bool): return self.send_json({"error": 'body must be {"pinned": true|false}'}, 400)
-            if lead in MOCK_LEADERS_UNPINNED: MOCK_LEADERS_UNPINNED.remove(lead)
-            if not body["pinned"]: MOCK_LEADERS_UNPINNED.append(lead)
-            return self.send_json({"pinned": body["pinned"]})
+        # 设为常驻 / 取消常驻 (#4331, assistant/route.go makeDirection / endDirection): the leaders list changes
+        if p.startswith("/api/v1/assistant/directions/") and p.split("/")[-1] in ("make", "end") and self.command == "POST":
+            lead, op = p.split("/")[5], p.split("/")[6]
+            if lead not in {c["session_id"] for c in ASSISTANT}: return self.send_json({"error": "not a Persona conversation"}, 409)
+            if op == "make":
+                if lead not in MOCK_LEADERS:
+                    MOCK_LEADERS.append(lead)
+                    MOCK_DIRECTION_NAMES.setdefault(lead, next((c.get("title", "") for c in ASSISTANT if c["session_id"] == lead), ""))
+                return self.send_json({"leader": {"id": lead, "name": MOCK_DIRECTION_NAMES.get(lead, "")}})
+            ended = lead in MOCK_LEADERS
+            if ended: MOCK_LEADERS.remove(lead)
+            return self.send_json({"ended": ended})
         if p == "/api/v1/pins" and self.command == "PUT":  # the hub keeps them (the reply is what it kept)
             body = json.loads(self.last_body or b"{}")
             PINS.update(spaces=list(body.get("spaces") or []), sessions=list(body.get("sessions") or []))

@@ -2,10 +2,10 @@
 // An open page picks up a new web build (#4331): the shell's entry script tells the build; the page reloads by itself
 // only when nothing would be lost, else it says so once and reloads at the next quiet moment.
 import { describe, expect, it } from "vitest";
-import { CHECK_GAP_MS, hasDraft, hasOverlay, isNewBuild, mayReload, newVersionChecker, QUIET_MS, runningEntry, shellEntry, type Calm } from "./new-version";
+import { CHECK_GAP_MS, hasDraft, hasOverlay, isNewBuild, mayReload, newVersionChecker, QUIET_MS, runningEntry, shellEntry, shellFingerprint, type Calm } from "./new-version";
 
-const shell = (entry: string) =>
-  `<!doctype html><html><head><base href="/"><script type="module" crossorigin src="./assets/${entry}"></script><link rel="modulepreload" crossorigin href="./assets/react-AAAA.js"><link rel="stylesheet" href="./assets/index-CCCC.css"></head><body><div id="root"></div></body></html>`;
+const shell = (entry: string, css = "styles-CCCC.css") =>
+  `<!doctype html><html><head><base href="/"><script type="module" crossorigin src="./assets/${entry}"></script><link rel="modulepreload" crossorigin href="./assets/react-AAAA.js"><link rel="stylesheet" href="./assets/${css}"></head><body><div id="root"></div></body></html>`;
 
 describe("the shell's build", () => {
   it("is the entry script it loads", () => {
@@ -132,6 +132,17 @@ describe("the checker", () => {
     t.c.tick();
     t.c.tick();
     expect(t.log).toEqual(["fetch", "notify", "reload"]);
+  });
+
+  it("notices a build that changed only its stylesheet, against the shell first served for this page's own build", async () => {
+    const t = setup();
+    await t.c.check(true);
+    expect(t.c.waiting()).toBe(false);
+    t.serve(shell("index-A.js", "styles-NEW.css"));
+    await t.c.check(true);
+    expect(t.log).toEqual(["fetch", "fetch", "reload"]);
+    expect(shellFingerprint(shell("index-A.js"))).toBe("/assets/index-A.js /assets/react-AAAA.js /assets/styles-CCCC.css");
+    expect(shellFingerprint("<html>sign in</html>")).toBe("");
   });
 
   it("reloads from the notice's button whenever the user wants", async () => {

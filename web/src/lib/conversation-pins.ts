@@ -69,20 +69,6 @@ export function usePinnedConversations(): string[] {
   return useSyncExternalStore(subscribe, getPinnedConversations, () => cached.ids);
 }
 
-/** The leaders in the order the sidebar's Directions lists them (#4331): the pinned ones first, then the ones the owner
- *  unpinned (the hub's `assistant.leaders_unpinned`), each part in the hub's order. Unpinning only moves a direction
- *  down its own group; it stays a direction. */
-export function directionOrder(leaders: readonly string[] | undefined, unpinned: readonly string[] | undefined): string[] {
-  const lead = leaders ?? [];
-  const off = new Set(unpinned ?? []);
-  return [...lead.filter((id) => !off.has(id)), ...lead.filter((id) => off.has(id))];
-}
-
-/** Whether direction `id` is pinned: a leader the owner has not unpinned. */
-export function directionPinned(id: string, leaders: readonly string[] | undefined, unpinned: readonly string[] | undefined): boolean {
-  return !!leaders?.includes(id) && !unpinned?.includes(id);
-}
-
 /** The order of the sidebar's pinned Persona chats: the leader conversations first (the hub's `assistant.leaders`, the
  *  same on every browser and device, in their order), then this browser's own pins. A leader pinned here too is listed once. */
 export function pinOrder(leaders: readonly string[] | undefined, pins: readonly string[]): string[] {

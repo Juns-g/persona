@@ -165,6 +165,7 @@ func (s *Service) directionsSoon() {
 	b.mu.Unlock()
 	f := func() {
 		s.directionsSync(context.Background())
+		s.tellLeaders(context.Background())                          // the clients' sidebar (direction_counts.go)
 		s.leaderReportsSync(context.Background(), time.Now(), false) // a review just written (leader_reports.go)
 	}
 	if after != nil {
@@ -315,9 +316,11 @@ type leaderView struct {
 	assistantwire.LeaderChangedEvent
 	// Progress: the leader's latest own summary (leader_progress), nil before its first.
 	Progress *leaderProgress `json:"progress,omitempty"`
-	By       string          `json:"by"`
-	At       time.Time       `json:"at"`
-	EndedAt  *time.Time      `json:"ended_at,omitempty"`
+	// Counts: a current leader's open tasks Working and Waiting on you (direction_counts.go); nil for an ended one.
+	Counts  *leaderCounts `json:"counts,omitempty"`
+	By      string        `json:"by"`
+	At      time.Time     `json:"at"`
+	EndedAt *time.Time    `json:"ended_at,omitempty"`
 }
 
 // directionRoutes: GET /api/v1/assistant/leaders lists every direction, current leaders first, then ended ones, each as
@@ -342,6 +345,15 @@ func (s *Service) directionRoutes() {
 				By: d.By, At: d.At, EndedAt: d.EndedAt})
 		}
 		b.mu.Unlock()
+		counts := map[string]leaderCounts{}
+		for _, l := range s.currentLeaders(r.Context()) {
+			counts[l.ID] = l.Counts
+		}
+		for i := range list {
+			if c, ok := counts[list[i].ID]; ok && !list[i].Ended {
+				list[i].Counts = &c
+			}
+		}
 		slices.SortFunc(list, func(a, b leaderView) int {
 			if a.Ended != b.Ended {
 				return cond(a.Ended, 1, -1)

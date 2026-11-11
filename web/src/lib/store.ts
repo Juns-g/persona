@@ -29,6 +29,7 @@ import { dropElicitationDraft } from "./elicitation";
 import type { OutboxEntry } from "./outbox";
 import { NO_LINK, RESTARTING_MS, type ConnLink } from "./connection";
 import { setOfflineProbe } from "./feedback";
+import { applyLeadersEvent, type LeaderInfo } from "./direction-names";
 import { afterEvent, afterHello, graceUntil, isResumed, NO_CURSOR, RESTART_FAST_MS, retryDelay, shownConn, wsQuery, type Drop, type EventCursor } from "./reconnect";
 
 export type Conn = "connecting" | "online" | "offline";
@@ -720,6 +721,17 @@ function onMessage(msg: Record<string, unknown>) {
         void refreshAgentSessions();
         void refreshAgentPrefs();
       }
+      break;
+    }
+    case "assistant_leaders": {
+      // the current leaders with their names and counts (#4331): the sidebar follows a leader made or ended anywhere at
+      // once; a new one may be a conversation this page has not listed yet, so the assistant is read again then
+      const a = state.assistant as (AssistantInfo & { manager?: string }) | null;
+      if (!a || (typeof msg.manager === "string" && a.manager && msg.manager !== a.manager)) break;
+      const ids = applyLeadersEvent(Array.isArray(msg.leaders) ? (msg.leaders as LeaderInfo[]) : []);
+      const known = new Set(a.conversations.map((c) => c.session_id));
+      if (ids.some((id) => !known.has(id))) void refreshAssistant().catch(() => {});
+      else if (JSON.stringify(ids) !== JSON.stringify((a.leaders ?? []).filter((id) => id !== a.main))) set({ assistant: { ...a, leaders: ids } });
       break;
     }
     case "hub_restarting":

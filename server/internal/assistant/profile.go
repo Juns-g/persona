@@ -98,9 +98,6 @@ type Settings struct {
 	// Leaders are the side conversations the user made leaders (#3133, supervise_leader.go): a task one hands out with
 	// task_plan is supervised by it instead of the main conversation. Empty (the default): only the main one supervises.
 	Leaders []string `json:"leaders,omitempty"`
-	// LeadersUnpinned are the leaders the owner unpinned (#4331, direction_pin.go): still in the sidebar's Directions,
-	// after the pinned ones. Empty (the default): every direction is pinned, in Leaders' order.
-	LeadersUnpinned []string `json:"leaders_unpinned,omitempty"`
 	// InterjectBackground: a message the user sends while a Claude conversation is still answering moves what runs in
 	// the foreground (Bash commands, subagents) to the background, so the message is taken up at once instead of after
 	// them (Claude Code 2.1.139 or later, node/assistant_interject.go). nil is off (the default).

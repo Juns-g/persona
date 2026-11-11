@@ -1,9 +1,8 @@
 // @vitest-environment jsdom
-// The leader conversations (#3623): the hub's `assistant.leaders` come first among the sidebar's Persona chats, in the
-// hub's order, on any browser (none of this browser's pins needed), as the "Directions" group under each direction's name
-// (GET /api/v1/assistant/leaders); then this browser's pins under "Pinned", then the rest under "Other chats". A direction
-// is pinned (the pin icon) until the owner unpins it, which the hub keeps (`leaders_unpinned`, #4331): it then follows the
-// pinned ones, still under Directions.
+// The leader conversations in the sidebar (#3623, #4331): Persona chats are the main one (its row above) and the hub's
+// `assistant.leaders` only, "常驻", in the hub's order under each one's name (GET /api/v1/assistant/leaders) with what it
+// has Working and Waiting on you; every other chat is under 全部对话. The hub's `assistant_leaders` updates an open
+// sidebar at once (a leader made or ended anywhere).
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -13,7 +12,7 @@ vi.hoisted(() => {
 });
 import { t } from "../i18n";
 import { resetDirectionNames } from "../lib/direction-names";
-import { refresh, reset } from "../lib/store";
+import { connect, refresh, reset } from "../lib/store";
 import type { Session } from "../lib/types";
 import { Sidebar } from "./Sidebar";
 
@@ -30,9 +29,8 @@ const conversations = [
   conversation("lead-a", "Growth", "2026-11-03T00:00:00Z"),
 ];
 let leaders: string[] | undefined;
-let unpinned: string[] | undefined;
 let named: unknown;
-let puts: string[] = [];
+let posts: string[] = [];
 
 let host: HTMLDivElement;
 let root: Root;
@@ -47,21 +45,20 @@ const row = (sid: string) => host.querySelector<HTMLAnchorElement>(`a[href="/per
 beforeEach(() => {
   localStorage.clear();
   leaders = ["lead-a", "lead-b"];
-  unpinned = undefined;
-  puts = [];
+  posts = [];
   named = { leaders: [
-    { id: "lead-a", title: "1110 | explore | Growth", name: "Product" },
-    { id: "lead-b", title: "Payments", name: "Infrastructure" },
+    { id: "lead-a", title: "1110 | explore | Growth", name: "Product", counts: { working: 2, needs_you: 1 } },
+    { id: "lead-b", title: "Payments", name: "Infrastructure", counts: { working: 0, needs_you: 0 } },
     { id: "old", title: "Old", name: "Ended one", ended: true },
   ] };
   vi.stubGlobal("fetch", vi.fn((url: string, init?: RequestInit) => {
     const path = new URL(url, "http://x").pathname;
-    if (init?.method === "PUT") {
-      puts.push(`${path} ${String(init.body)}`);
+    if (init?.method === "POST") {
+      posts.push(path);
       return Promise.resolve(new Response(String(init.body), { headers: { "Content-Type": "application/json" } }));
     }
     if (path === "/api/v1/assistant/leaders" && named === undefined) return Promise.resolve(new Response("{}", { status: 404 }));
-    const body = path === "/api/v1/assistant" ? { machine_id: "hub", main: "main", leaders, leaders_unpinned: unpinned, conversations } : path === "/api/v1/assistant/leaders" ? named : path === "/api/v1/machines" ? { machines: [{ id: "hub", name: "Hub", online: true }] } : {};
+    const body = path === "/api/v1/assistant" ? { machine_id: "hub", main: "main", leaders, conversations } : path === "/api/v1/assistant/leaders" ? named : path === "/api/v1/machines" ? { machines: [{ id: "hub", name: "Hub", online: true }] } : {};
     return Promise.resolve(new Response(JSON.stringify(body), { headers: { "Content-Type": "application/json" } }));
   }));
   history.replaceState(null, "", "/overview");
@@ -84,49 +81,46 @@ async function renderSidebar() {
   await flush();
 }
 
-describe("the leader conversations in the sidebar", () => {
-  it("are the Directions group, first in the hub's order, under their direction's names, pinned, with no badge", async () => {
-    await renderSidebar();
-    expect(rowIds()).toEqual(["lead-a", "lead-b", "newest", "mine"]);
-    expect(headings()).toEqual([t("sidebar.directions"), t("sidebar.other_chats")]);
-    expect(row("lead-a").textContent).toContain("Product");
-    expect(row("lead-a").textContent).not.toContain("Growth");
-    expect(row("lead-b").textContent).toContain("Infrastructure");
-    // pinned until the owner unpins them: the pin icon, but no "Pinned" heading only because of them
-    const plain = row("newest").querySelector("svg")!.innerHTML;
-    for (const id of ["lead-a", "lead-b"]) expect(row(id).querySelector("svg")!.innerHTML).not.toBe(plain);
-    expect(headings()).not.toContain(t("sidebar.pinned_section"));
-    expect(row("newest").textContent).toContain("Trip plan");
-    // nothing pinned in this browser: no Unpin all
-    expect(host.querySelector(`button[aria-label="${t("conversation-menu.unpin_all")}"]`)).toBeNull();
-  });
+class FakeSocket {
+  static last: FakeSocket | null = null;
+  readyState = 0;
+  onopen: (() => void) | null = null;
+  onmessage: ((ev: { data: string }) => void) | null = null;
+  constructor() { FakeSocket.last = this; }
+  send() {}
+  close() { this.readyState = 3; }
+}
+const push = (msg: unknown) => act(() => FakeSocket.last!.onmessage?.({ data: JSON.stringify(msg) }));
 
-  it("put this browser's pins under Pinned after them, and the rest under Other chats", async () => {
-    localStorage.setItem("assistant.pinned", '["mine", "lead-b"]');
+describe("the leader conversations in the sidebar", () => {
+  it("are 常驻, in the hub's order, under their names with what they have open; the other chats are under 全部对话", async () => {
     await renderSidebar();
-    expect(rowIds()).toEqual(["lead-a", "lead-b", "mine", "newest"]);
-    expect(headings()).toEqual([t("sidebar.directions"), t("sidebar.pinned_section"), t("sidebar.other_chats")]);
-    expect(row("mine").querySelector("svg")!.innerHTML).not.toBe(row("newest").querySelector("svg")!.innerHTML);
+    expect(rowIds()).toEqual(["lead-a", "lead-b"]);
+    expect(headings()).toEqual([t("sidebar.directions")]);
+    expect(t("sidebar.directions")).toBe("常驻");
+    expect(row("lead-a").textContent).toContain("Product");
+    expect(row("lead-a").textContent).toContain("在做 2 · 等你 1");
     expect(row("lead-b").textContent).toContain("Infrastructure");
-    expect(host.querySelector(`button[aria-label="${t("conversation-menu.unpin_all")}"]`)).not.toBeNull();
+    expect(row("lead-b").textContent).not.toContain("在做");
+    // the pin icon on each, no other group, and none of the old words
+    const allChats = host.querySelector<HTMLAnchorElement>('a[href="/history"]')!;
+    expect(allChats.textContent).toContain(t("sidebar.all_chats"));
+    expect(headings().join()).not.toMatch(/置顶|其他对话|方向/);
   });
 
   it("show their titles on a hub without the leaders list", async () => {
     named = undefined;
     await renderSidebar();
-    expect(rowIds()).toEqual(["lead-a", "lead-b", "newest", "mine"]);
+    expect(rowIds()).toEqual(["lead-a", "lead-b"]);
     expect(row("lead-a").textContent).toContain("Growth");
-    expect(headings()[0]).toBe(t("sidebar.directions"));
   });
 
-  it("leave the list as before when the hub has none: no group titles", async () => {
+  it("leave only 全部对话 when the hub has none", async () => {
     leaders = undefined;
-    localStorage.setItem("assistant.pinned", '["mine"]');
     await renderSidebar();
-    expect(rowIds()).toEqual(["mine", "newest", "lead-a", "lead-b"]);
-    expect(headings()).toEqual([t("sidebar.pinned_section")]);
-    expect(host.textContent).not.toContain(t("sidebar.directions"));
-    expect(host.textContent).not.toContain(t("sidebar.other_chats"));
+    expect(rowIds()).toEqual([]);
+    expect(headings()).toEqual([]);
+    expect(host.querySelector('a[href="/history"]')).not.toBeNull();
   });
 
   it("have New chat as the compose icon on the section's title, not a row of its own", async () => {
@@ -136,52 +130,42 @@ describe("the leader conversations in the sidebar", () => {
     expect(link!.textContent).toBe("");
     expect(link!.closest("[data-sidebar-rows] .group\\/sec")).not.toBeNull();
     expect(link!.parentElement!.textContent).toContain(t("sidebar.persona_chats"));
-    expect([...host.querySelectorAll('a[href="/persona/new"]')].filter((a) => a.textContent?.includes(t("sidebar.new_chat")))).toHaveLength(0);
   });
 
-  it("follow the pinned ones once unpinned, still under Directions, without the pin icon", async () => {
-    unpinned = ["lead-a"];
+  it("are made and ended from the menu through the hub: 取消常驻 on one, never 置顶", async () => {
     await renderSidebar();
-    expect(rowIds()).toEqual(["lead-b", "lead-a", "newest", "mine"]);
-    expect(headings()).toEqual([t("sidebar.directions"), t("sidebar.other_chats")]);
-    expect(row("lead-a").querySelector("svg")!.innerHTML).toBe(row("newest").querySelector("svg")!.innerHTML);
-    expect(row("lead-b").querySelector("svg")!.innerHTML).not.toBe(row("newest").querySelector("svg")!.innerHTML);
-  });
-
-  it("show at most 5 Other chats, then All chats", async () => {
-    const many = Array.from({ length: 8 }, (_, i) => conversation(`c${i}`, `Chat ${i}`, `2026-11-09T0${i}:00:00Z`));
-    conversations.push(...many);
-    try {
-      await renderSidebar();
-      expect(rowIds().filter((id) => id.startsWith("c") || id === "newest" || id === "mine")).toEqual(["newest", "c7", "c6", "c5", "c4"]);
-      expect(host.querySelector('a[href="/history"]')?.textContent).toContain(t("sidebar.all_chats"));
-    } finally {
-      conversations.splice(conversations.length - many.length);
-    }
-  });
-
-  it("unpin and pin again through the hub from their menu, while a local pin keeps this browser's Unpin", async () => {
-    localStorage.setItem("assistant.pinned", '["mine"]');
-    await renderSidebar();
-    const menuOf = async (sid: string) => {
-      act(() => row(sid).dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, clientX: 10, clientY: 10 })));
-      await flush();
-      const items = [...document.querySelectorAll('[role="menu"] [role="menuitem"]')].map((el) => el.textContent ?? "");
-      act(() => document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
-      await flush();
-      return items;
-    };
-    const lead = await menuOf("lead-a");
-    expect(lead.some((x) => x.includes(t("conversation-menu.rename")))).toBe(true);
-    expect(lead.some((x) => x.includes(t("conversation-menu.unpin")))).toBe(true);
     act(() => row("lead-a").dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, clientX: 10, clientY: 10 })));
     await flush();
-    const unpin = [...document.querySelectorAll<HTMLElement>('[role="menu"] [role="menuitem"]')].find((el) => el.textContent?.includes(t("conversation-menu.unpin")))!;
-    act(() => unpin.click());
+    const items = [...document.querySelectorAll<HTMLElement>('[role="menu"] [role="menuitem"]')];
+    expect(items.some((el) => el.textContent?.includes("置顶"))).toBe(false);
+    act(() => items.find((el) => el.textContent?.includes("取消常驻"))!.click());
     await flush();
-    expect(puts).toEqual(['/api/v1/assistant/directions/lead-a/pinned {"pinned":false}']);
-    expect(JSON.parse(localStorage.getItem("assistant.pinned") ?? "[]")).toEqual(["mine"]);
-    const mine = await menuOf("mine");
-    expect(mine.some((x) => x.includes(t("conversation-menu.unpin")))).toBe(true);
+    expect(posts).toEqual(["/api/v1/assistant/directions/lead-a/end"]);
+  });
+
+  it("follow the hub's assistant_leaders at once: a new one shows, an ended one goes, counts change", async () => {
+    vi.stubGlobal("WebSocket", FakeSocket);
+    act(() => {
+      connect();
+      FakeSocket.last!.readyState = 1;
+      FakeSocket.last!.onopen?.();
+    });
+    push({ type: "hello", features: [] });
+    await renderSidebar();
+    expect(rowIds()).toEqual(["lead-a", "lead-b"]);
+    // the secretary made "mine" a lead: no reload, no reconnect
+    push({ type: "assistant_leaders", manager: "assistant", leaders: [
+      { id: "lead-a", name: "Product", counts: { working: 0, needs_you: 3 } },
+      { id: "lead-b", name: "Infrastructure", counts: { working: 0, needs_you: 0 } },
+      { id: "mine", name: "Docs sync", counts: { working: 1, needs_you: 0 } },
+    ] });
+    await flush();
+    expect(rowIds()).toEqual(["lead-a", "lead-b", "mine"]);
+    expect(row("mine").textContent).toContain("Docs sync");
+    expect(row("mine").textContent).toContain("在做 1");
+    expect(row("lead-a").textContent).toContain("等你 3");
+    push({ type: "assistant_leaders", manager: "assistant", leaders: [{ id: "mine", name: "Docs sync", counts: { working: 1, needs_you: 0 } }] });
+    await flush();
+    expect(rowIds()).toEqual(["mine"]);
   });
 });

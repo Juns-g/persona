@@ -32,6 +32,15 @@ export function shellEntry(html: string): string | null {
   return null;
 }
 
+/** All the build's files a shell names up front (its entry script, stylesheets and preloads), sorted: a build that
+ *  changed only its global stylesheet keeps the entry's name but not this. "" for a page that is not the app's. */
+export function shellFingerprint(html: string): string {
+  if (!shellEntry(html)) return "";
+  const out = new Set<string>();
+  for (const m of html.matchAll(/(?:src|href)=["']?\.?(\/assets\/[^"'\s?#>]+)/g)) out.add(m[1]);
+  return [...out].sort().join(" ");
+}
+
 /** Whether `served` is another build than `running` (unknown on either side is no). */
 export function isNewBuild(running: string | null, served: string | null): boolean {
   return !!running && !!served && running !== served;
@@ -85,6 +94,8 @@ export interface NewVersionDeps {
 /** One page's checker: `check` asks for the shell, `tick` reloads a waiting build once the page is calm. */
 export function newVersionChecker(deps: NewVersionDeps) {
   let last = -Infinity;
+  // the shell of this page's own build as the hub first served it: what a later shell is compared with in full
+  let baseline = "";
   let waiting = false;
   let told = false;
   let gone = false;
@@ -111,7 +122,13 @@ export function newVersionChecker(deps: NewVersionDeps) {
     } catch {
       return; // the hub out of reach: the next check asks again
     }
-    if (isNewBuild(deps.running(), shellEntry(html))) waiting = true;
+    const entry = shellEntry(html);
+    const print = shellFingerprint(html);
+    if (isNewBuild(deps.running(), entry)) waiting = true;
+    else if (entry && entry === deps.running()) {
+      if (!baseline) baseline = print;
+      else if (print !== baseline) waiting = true;
+    }
     tick();
   };
   return { check, tick, waiting: () => waiting };
@@ -153,6 +170,8 @@ function begin(notify: (reloadNow: () => void) => void) {
   addEventListener("online", () => void checker.check());
   setInterval(() => void checker.check(), CHECK_EVERY_MS);
   setInterval(() => checker.waiting() && checker.tick(), WAIT_TICK_MS);
+  // at once too: a hello that came before this module loaded would otherwise leave the first check to the interval
+  void checker.check(true);
   return checker;
 }
 
