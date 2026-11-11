@@ -58,6 +58,8 @@ enum class DecisionKind(@StringRes val labelRes: Int, val icon: PhIcon) {
  * brief an ink-on-neutral card; the board a neutral strip with a thin amber edge that expands in
  * place — collapsed it shows [summary] and [quickActions], tapping it opens the [body] and [actions].
  * [onOpen] opens the conversation (glass and brief: tapping the card; board: the "Open" action).
+ * [note] says why the quick actions cannot be used (the hub is out of reach, the computer must approve): the board shows it
+ * above them while collapsed, where the [body] that says it otherwise is not drawn (#2483).
  */
 @Composable
 fun DecisionCard(
@@ -69,6 +71,7 @@ fun DecisionCard(
     expires: String? = null,
     summary: String? = null,
     advice: String? = null,
+    note: String? = null,
     expandedByDefault: Boolean = true,
     onOpen: (() -> Unit)? = null,
     quickActions: (@Composable RowScope.() -> Unit)? = null,
@@ -138,6 +141,7 @@ fun DecisionCard(
                         onOpen?.let { Spacer(Modifier.height(4.dp)); JTextButton(stringResource(R.string.designsystem_decision_open_chat), it, icon = PhIcons.ArrowSquareOut) }
                     } else {
                         summary?.let { Spacer(Modifier.height(8.dp)); Text(it, style = type.code, color = palette.ink2, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                        note?.let { Spacer(Modifier.height(Tokens.Space.s)); Text(it, style = type.caption, color = palette.cautionText) }
                         quickActions?.let { Spacer(Modifier.height(10.dp)); Row(horizontalArrangement = Arrangement.spacedBy(6.dp), content = it) }
                     }
                 }
@@ -412,6 +416,30 @@ fun DecisionButtons(primary: JAction, modifier: Modifier = Modifier, secondary: 
         // Several secondary choices (a plan's "Approve and run automatically" and "Confirm each step") wrap to a second line instead of squeezing.
         if (more.isNotEmpty()) FlowRow(Modifier.fillMaxWidth().padding(top = 4.dp), horizontalArrangement = Arrangement.Center) {
             more.forEach { JTextButton(it.label, it.onClick, enabled = it.enabled && !busy) }
+        }
+    }
+}
+
+/** A reply draft has one primary Send and two reversible secondary choices. Stack at large text or narrow widths. */
+@Composable
+fun DraftDecisionButtons(send: JAction, later: JAction, dismiss: JAction, modifier: Modifier = Modifier,
+    busy: Boolean = false, sendModifier: Modifier = Modifier, laterModifier: Modifier = Modifier, dismissModifier: Modifier = Modifier) {
+    BoxWithConstraints(modifier.fillMaxWidth()) {
+        val stacked = LocalDensity.current.fontScale >= 1.3f || maxWidth < 320.dp
+        Column(verticalArrangement = Arrangement.spacedBy(Tokens.Space.s)) {
+            JButton(send.label, send.onClick, sendModifier.fillMaxWidth(), kind = JButtonKind.Primary,
+                size = JButtonSize.Large, enabled = send.enabled && !busy, loading = busy)
+            if (stacked) {
+                JButton(later.label, later.onClick, laterModifier.fillMaxWidth(), kind = JButtonKind.Secondary,
+                    size = JButtonSize.Large, enabled = later.enabled && !busy)
+                JButton(dismiss.label, dismiss.onClick, dismissModifier.fillMaxWidth(), kind = JButtonKind.Secondary,
+                    size = JButtonSize.Large, enabled = dismiss.enabled && !busy)
+            } else Row(horizontalArrangement = Arrangement.spacedBy(Tokens.Space.s)) {
+                JButton(later.label, later.onClick, laterModifier.weight(1f), kind = JButtonKind.Secondary,
+                    size = JButtonSize.Large, enabled = later.enabled && !busy)
+                JButton(dismiss.label, dismiss.onClick, dismissModifier.weight(1f), kind = JButtonKind.Secondary,
+                    size = JButtonSize.Large, enabled = dismiss.enabled && !busy)
+            }
         }
     }
 }

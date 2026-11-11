@@ -28,6 +28,8 @@ extension Theme {
         static let backgroundWaiting = "clock.fill"
         /// Agents grouped or ordered by their state (the Agents list's By Status / By Status).
         static let byState = "circle.grid.2x1"
+        /// Agents grouped by the app they run in (the Agents list's By App, #3756).
+        static let byApp = "macwindow"
         static let muted = "bell.slash.fill"
         static let notifications = "bell.badge"
         /// The hours this device's notifications keep quiet (Settings › Notifications).
@@ -54,10 +56,16 @@ extension Theme {
         static let supervised = "checkmark.diamond"
         /// A criterion a review found missing (the met one is `done`, one not reviewed yet `time`).
         static let unmet = close
+        /// A criterion added after an acceptance that still stands: no review judged it, none waits on it (#3156).
+        static let notChecked = "minus"
+        /// Bring a shelved to-do back to its section (To-dos › Shelved › Restore, #3206).
+        static let restoreShelved = unarchive
         /// A supervised task's agent reported to Persona (a question, a block, a finish; #5112).
         static let reported = "arrow.up.message"
         static let recurring = "repeat"
         static let schedule = "alarm"
+        /// An alarm or a timer Persona set on the iPhone (AlarmKit, #2278).
+        static let alarmClock = schedule
         /// The session triage: a stopped agent read to say whether it is done or what it waits for (Settings › Session Triage).
         static let triage = "text.badge.checkmark"
         // The inbox chain (docs/assistant/inbox.md): what happened to an event, one icon per kind.
@@ -128,6 +136,8 @@ extension Theme {
         /// One step turns into the next (a setting's example: before → after, a timeline).
         static let becomes = "arrow.forward"
         static let gitBranch = "arrow.triangle.branch"
+        /// Review an Agent's changes (#151): the session's ⋯ and the Git pane's button.
+        static let reviewChanges = "doc.text.magnifyingglass"
         /// The spaces a host nests under another (Orca's child worktrees,「N 个子项」, #3075).
         static let childSpaces = "square.3.layers.3d.down.right"
         /// A notification that needs attention, in a workspace or from a background task.
@@ -342,6 +352,8 @@ extension Theme {
         /// Home: Back to Main Chat (the main conversation), and a repository's main checkout in the Agents list's By Repository (as Orca
         /// and the web mark it).
         static let home = "house"
+        /// Home accessories and scenes (HomeKit, #2285).
+        static let homeAccessories = home
         static let folderFilled = "folder.fill"
         /// Up one folder (the new chat's directory browser, Parent Folder).
         static let parentFolder = "arrow.turn.left.up"
@@ -379,6 +391,10 @@ extension Theme {
         static let pointerCenter = "scope"
         /// The Mac's clipboard and the phone's, both ways.
         static let clipboard = "clipboard"
+        /// Send Clipboard: the phone's clipboard to a computer (#3064).
+        static let clipboardSend = "arrow.up.doc.on.clipboard"
+        /// Get Clipboard: a computer's clipboard onto the phone.
+        static let clipboardGet = "square.and.arrow.down.on.square"
         /// How to use it (Help).
         static let help = "questionmark.circle"
         /// I'm Done: the Mac handed back to the agent.
@@ -406,6 +422,9 @@ extension Theme {
         /// A hub reached through a SOCKS5 proxy another app on this device serves (Settings › hub › Local Proxy,
         /// docs/operations/network.md "Connecting to hub through a local SOCKS5 proxy").
         static let localProxy = "app.connected.to.app.below.fill"
+        /// A hub behind Cloudflare Access and the service token that lets the app through (Settings › hub › Cloudflare
+        /// Access, docs/operations/network.md "Behind Cloudflare Access").
+        static let cloudflareAccess = "person.badge.shield.checkmark"
         /// This device's own SSH key (its public half, to copy onto the server).
         static let sshKey = "key.horizontal"
         /// The SSH server's key fingerprint, confirmed and pinned.
@@ -434,6 +453,8 @@ extension Theme {
         static let pluginMoney = "creditcard"
         static let pluginStar = "star"
         static let phone = "iphone"
+        /// The assistant operating an iPhone through a Mac (the extension iphone): its section, its tools.
+        static let phoneControl = "iphone.radiowaves.left.and.right"
         static let watch = "applewatch"
         static let handoff = "iphone.and.arrow.forward"
         /// The default web browser (open a link outside the app).
@@ -521,6 +542,12 @@ extension Theme {
         static let groupChat = "rectangle.3.group.bubble"
         /// Messages (the Messages app's data on a Mac) as a connector, and its conversations.
         static let messagesApp = "message.fill"
+        /// A phone or FaceTime call Persona starts (#2280).
+        static let phoneCall = "phone"
+        /// The Shortcuts app's shortcuts Persona may run (#2283).
+        static let shortcutsApp = "square.2.layers.3d"
+        /// Music playing on the iPhone (#2284).
+        static let music = "music.note"
         /// An attachment (a mail's, a message's): a file; a video, a voice message.
         static let attachment = "paperclip"
         static let video = "video"
@@ -563,6 +590,8 @@ extension Theme {
         static let findFiles = "folder.badge.questionmark"
         /// Text searched for inside files (Grep).
         static let findText = "text.magnifyingglass"
+        /// A command watched in the background, each line it prints an event (Claude Code's Monitor, its task notes).
+        static let monitor = "waveform.path.ecg"
         /// A subagent the agent started (the Agent / Task tool, a session's subagents); one at work.
         static let subagent = "person.2"
         static let subagentWorking = "person.2.badge.gearshape"
@@ -570,12 +599,16 @@ extension Theme {
         static let agentChat = "bubble.left.and.text.bubble.right"
         /// A meeting (a scheduled task's meeting prep, the suggestion to prepare one, a meeting recording).
         static let meeting = "person.2.wave.2"
+        /// Persona stops attending the meeting being recorded (#2981: the recording Live Activity's Turn Off).
+        static let attendanceOff = "waveform.slash"
         /// The calendar event a meeting recording is named after (docs/apple/recording.md).
         static let calendarEvent = "calendar.day.timeline.left"
         /// A meeting's minutes (#2710): a key point, a decision, a question left open (action items are `todo`).
         static let keyPoint = "text.bubble.fill"
         static let decision = "signature"
         static let openQuestion = "questionmark.circle.dashed"
+        /// A meeting's minutes as a whole (the watch's Meeting Minutes).
+        static let minutes = "note.text"
         /// People in the knowledge base.
         static let people = "person.3"
         /// A tap on the screen, in tips and features.

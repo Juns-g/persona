@@ -1,5 +1,61 @@
 # Lessons: web UI and interactions
 
+## Dismiss a draft, not its source item (#3743)
+
+A task-progress reply card has its own feed id; its Inbox reference can be shared by later progress drafts. Persist
+Don't handle on the card, not by marking the Inbox item done or hiding every card with that reference. Send and
+Dismiss need one synchronous admission guard, and only a successful send may show a sent receipt. Undo sends the
+dismissal receipt back to the same manager and applies the full returned body so omitted dismissal fields really clear.
+A feed read started before the write must not roll it back, and a late write response must not erase newer sent/filed
+pushes. Capture a live card's manager on arrival and name even the default explicitly: API auto-routing otherwise
+substitutes a later assistant selection on card-id-only routes.
+Check a reload and a new same-reference draft in the actual tray, not only the historical card renderer.
+Keep the draft editor and its toast handlers behind a local lazy boundary; the collapsed startup tray does not need
+that UI. Pass existing task helpers into the editor instead of importing the whole Tasks module back into its lazy
+chunk. Static-render tests exercise the extracted editor directly; mounted tray tests wait for the lazy card and still
+exercise its actions. Leave Send/Dismiss admission, owner capture and revision fences in the synchronous feed layer.
+
+## Gate identity chrome by installed assistants, not by roster availability (#3967)
+
+A roster with one assistant does not need assistant identity or switching UI. Reuse the installed-assistant cardinality
+rule used by conversation titles and list grouping; offline installed assistants count and pending installs do not.
+Restore the earlier product header and its existing controls rather than hiding the whole header, which would also
+remove appearance, Settings and Disconnect. Keep product branding and the user's chosen Persona look separate from
+roster name/monogram attribution. Regress one → two → one on a mounted view, along with one installed plus a pending
+install, and assert the rendered labels, avatars and menu rows rather than only the count helper. A phone's menu and
+drawer own separate history entries: wait for each closing entry to pop before the next full-page navigation, or a
+late Back can replace the requested Inbox page with the previous main conversation. Prefer the built web preview for
+broad E2E runs on a busy machine; thousands of Vite development modules can exhaust Chromium's renderer resources.
+
+## Retention mode changes must not save an intermediate window (#3780, #3862)
+
+Switching from forever to finite retention only exposes a local draft: saving a default such as 365 days first can
+irreversibly delete older minutes before the user commits a longer window. Submit only the number committed on Enter
+or blur. Regress the absence of a PUT on mode change, cancellation, and restoring the saved mode after a refusal.
+
+## Same-state list updates can change background progress (#3588)
+
+The task tray often has only list summaries, whereas the chat header has complete Session detail. A comparison of
+state, pending cards and hub work alone cannot detect a workflow's phase/count updates or background completion.
+Keep a compact activity projection on the list, prefer its fresh revision for task rows, and treat absent run metadata
+and omitted zero counts as clears rather than partial merges. When complete detail replaces a summary hint, remove
+all summary-only fields so they cannot override the detail arrays. Sum distinct active task bindings, not just the lead.
+Test running commands → workflow progress → subagents → real external wait on the same mounted row.
+
+## A panel's entry point is not its displayed conversation (#3562)
+
+A task panel embeds its selected Agent's `ChatView`, but its header menu used the task's route for **Open in new window**. Build that destination from the same selected machine/session pair passed to the chat, including after switching Agents and before the session roster arrives. Only a task panel without an Agent opens the task page; the chat's separate linked-task action retains its own destination. Regress the real side panel, chat header and menu together, not only a route helper.
+
+## Fixture display labels can match a deployment's private values (#3552)
+
+Generic fixture IDs are not enough: a display name can still match a configured machine identifier and block the mandatory prebuild privacy scan on another machine. Use neutral test labels, and update their expected summaries and click targets together without changing IDs or assertions. Keep privacy checks enabled; do not exempt a configured value just to make a fixture pass.
+
+## Ancestor package metadata can break Vite config loading (#3301)
+
+When Vite/esbuild reports invalid `package.json` content outside the checkout, inspect the exact reported ancestor: the web package can be valid while package-scope resolution reads a broken parent file. A successful Go build does not prove that the bundled web build or deployment succeeded. Do not change application code or overwrite another worker's shared file just to silence this error.
+
+If the original configuration loads again later, verify a fresh normal build and the serving artifacts before declaring recovery. Retain the earlier failure, and distinguish stale-source refusals from compilation errors. Never bypass freshness checks or reset the failure budget to force publication.
+
 ## A clipping fold left a tall card's buttons out of sight (2026-11-10, #3112)
 
 - **A sticky footer sticks in its nearest clipping ancestor, not the box that scrolls**: #2026 made a waiting card `shrink-0` with an `overflow-clip` root and a `sticky -bottom-1` footer, which works where the cards sit straight in the dock. On a phone and in a side panel (an agent's or task's chat over the main one, `compactDock`) PendingCards puts the open cards in a `Collapse`, whose clip box was `overflow-hidden`: a scroll container of its own, so the footer stuck inside it and stayed at the card's natural bottom, below `data-chat-cards`. A Feishu permission card with a long `python3 -c …` command showed half of its "Always allow covers…" line and no Allow / Deny. Open folds are `unclipped` now. Look for every `overflow-hidden` between a sticky element and the scroller you mean.
@@ -604,6 +660,16 @@ Six parallel lanes (chat rendering, message actions, Agents list / Machines, Ter
 
 Pages follow chats through WebSocket pushes. Full queues, apparently-open dead connections, or server bugs can lose a push; after the Agent stops, no next batch exposes it. Session lists still push (`sessions_delta`), so pages can detect stale content: list `updated_at` newer than latest item's `ts`, with no items for a while, triggers an `after_seq` fetch (`lib/stale-page.ts`, 10-second throttle, foreground only). Compare "file changed" with "page content," not "push arrived," avoiding dependence on any particular healthy push path. Merge retrieved data silently; label "Not real-time" only if fallback repeats.
 Writes without items (titles, modes) also advance `updated_at`, returning empty fetches. Record "Already checked this `updated_at`" to avoid refetching every 10 seconds. Deduplicate fetched items against concurrent pushes (count only `seq` above `covered`), or healthy streams appear to lose data.
+
+## Time cannot tell the last line of a burst was lost, and a push cannot settle a rev (2026-11-10, #1179)
+
+- **What went wrong**: the fallback above ignored an `updated_at` within `STALE_SLACK_MS` (1 s) of the newest line's `ts`, since the file's mtime and the line's own clock compare loosely. When the last line of a burst came 0.3 s after the line before and its push was lost, the page never asked, until the agent wrote again.
+- **Now**: the page also watches the session's `rev` (the list's row and the hub's `revs` event, which moves only the rev; `RevWatch` in `lib/stale-page.ts`) and asks once quiet when it moved since the page's newest read was *sent*. The time rule stays for subagents, which have no rev.
+- **Remembering the list's version when items last came does not work** (#1193's first take): the list comes from the node's poll and the push from its transcript watch, so a list can come before the push for an earlier line, and that push then "acknowledges" a version whose last line never came. Nothing says which lines a rev covers; only a read sent after the move does.
+- **A read's arrival is not its coverage**: a rev that moves while the read is on its way may be for a line written after the node read the file. The watch counts moves and keeps how many it had heard when the read went out.
+- **Cost**: the node reports revs on its next tick, mostly after the items, so an open chat makes one empty `after_seq` read each time it goes quiet, as on iOS (#1189).
+- **Tests that restart the clock**: `lastPulls` in `useTranscript` outlives a page on purpose (reopening a chat does not ask again at once). The sync scenarios start every case at the same fake time with the same session, so an earlier case's ask lay in the future and its pacing silently blocked the next case's: they call `resetStalePullsForTests`.
+- Tests: `useTranscript.gap.test.tsx` ("a lost last line of a burst"), `stale-page.test.ts`, the shared case `burst_last_push_lost_pulls`.
 
 ## Scripted scrolling ignores reduced motion (2026-11-05, #2664)
 

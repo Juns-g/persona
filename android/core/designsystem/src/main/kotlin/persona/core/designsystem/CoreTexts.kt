@@ -7,7 +7,7 @@ import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.ui.platform.LocalResources
 import persona.core.contracts.CoreText
 import persona.core.contracts.CoreTextFailure
-import persona.core.domain.lines.compactUnits
+import persona.core.contracts.compactCount
 
 /**
  * [CoreText] (the words of the pure-JVM core modules) in the language of [resources]. The strings live in
@@ -23,8 +23,8 @@ fun CoreText.resolve(resources: Resources): String {
         CoreText.Key.CompactCount -> {
             val count = (args.first() as Number).toLong()
             val unit = resources.getString(R.string.designsystem_core_compact_unit).toLong()
-            return if (count < unit) count.toString()
-                else resources.getString(R.string.designsystem_core_compact_count, compactUnits(count, unit))
+            return compactCount(count, unit, { resources.getString(R.string.designsystem_core_compact_count, it) },
+                { resources.getString(R.string.designsystem_core_compact_millions, it) })
         }
         else -> Unit
     }
@@ -193,7 +193,9 @@ private fun resourceOf(key: CoreText.Key): Int = when (key) {
     CoreText.Key.EngineHerdr -> R.string.designsystem_core_engine_herdr
     CoreText.Key.EngineHerdrApp -> R.string.designsystem_core_engine_herdr_app
     CoreText.Key.EngineOrca -> R.string.designsystem_core_engine_orca
+    CoreText.Key.EngineTern -> R.string.designsystem_core_engine_tern
     CoreText.Key.EnginePaseo -> R.string.designsystem_core_engine_paseo
+    CoreText.Key.EngineCindy -> R.string.designsystem_core_engine_cindy
     CoreText.Key.EngineOffline -> R.string.designsystem_core_engine_offline
     CoreText.Key.EngineUnknown -> R.string.designsystem_core_engine_unknown
     CoreText.Key.EngineFound -> R.string.designsystem_core_engine_found
@@ -333,6 +335,8 @@ private fun resourceOf(key: CoreText.Key): Int = when (key) {
     CoreText.Key.EndpointProtocol -> R.string.designsystem_core_endpoint_protocol
     CoreText.Key.EndpointRejected -> R.string.designsystem_core_endpoint_rejected
     CoreText.Key.EndpointRateLimited -> R.string.designsystem_core_endpoint_rate_limited
+    CoreText.Key.EndpointAccessRequired -> R.string.designsystem_core_endpoint_access_required
+    CoreText.Key.EndpointAccessRejected -> R.string.designsystem_core_endpoint_access_rejected
     CoreText.Key.EndpointFailed -> R.string.designsystem_core_endpoint_failed
     CoreText.Key.AddressEmpty -> R.string.designsystem_core_address_empty
     CoreText.Key.AddressSpaces -> R.string.designsystem_core_address_spaces
@@ -417,6 +421,6 @@ private fun resourceOf(key: CoreText.Key): Int = when (key) {
     CoreText.Key.WorkflowFailed -> R.string.designsystem_core_workflow_failed
     CoreText.Key.WorkflowKilled -> R.string.designsystem_core_workflow_killed
     CoreText.Key.WorkflowStalled -> R.string.designsystem_core_workflow_stalled
-    CoreText.Key.WorkflowAgentsDone -> R.string.designsystem_core_workflow_agents_done
+    CoreText.Key.WorkflowAgentsDone -> -R.plurals.designsystem_core_workflow_agents_done
     CoreText.Key.Verbatim, CoreText.Key.Joined -> error("no resource")
 }
