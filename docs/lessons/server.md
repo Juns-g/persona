@@ -875,6 +875,14 @@ back) and only keeps the entry. Tell them apart by git's `CONFLICT` lines plus `
 
 ## Knowledge base (docs/assistant/knowledge.md)
 
+- An ascending GitHub search cursor cannot use `updated_at` alone when a page ends inside one second (#4461). Keep the
+  completed thread identities at that boundary, resume an unfinished thread across restarts, and rescan a tied boundary
+  instead of trusting a page number across reordered results. Checkpoint matching-generation scans across quota windows,
+  verify every ID again immediately before moving on, and retry a changing search. More than 1,000 threads in one second,
+  or repeatedly lacking enough quota for that final check, is an explicit retryable limit. Search has no atomic snapshot:
+  a result indexed only after the final check cannot be guaranteed. Test the actual connector against synthetic HTTP,
+  including insertions, reordering, cancellation, repeated limited quota windows and retries.
+
 - Forever is a sentinel, not zero days (#3780, #3862). Preserve `minutes_days: 0` before applying the transcript-retention floor, calculating an expiry date or confirming an echoed setting. A trimmed recording's metadata proves it has retained minutes even if `minutes.json` cannot be read; a parse failure must not turn forever retention into deletion. Test repeated sweeps, unreadable trimmed minutes, switching back to finite retention and explicit user deletion.
 - A meeting answer may be spoken in front of others (#3862). Until private meetings can be marked, gate earlier minutes, their linked projects and action-item states together before retrieval; a prompt warning cannot hide material already sent to the model. Keep opt-in retrieval tests as well as a default-off test that checks the model input and returned citations.
 
