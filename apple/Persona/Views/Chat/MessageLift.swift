@@ -211,7 +211,7 @@ private struct LiftBlur: ViewModifier {
     }
 }
 
-/// A page that floats a bar over the chat in it (Persona's conversation: its top bar and the switcher under it) draws
+/// A page that floats a bar over the chat in it (Persona's conversation: its top bar) draws
 /// that chat's lifted message itself, over the bar, so the whole page dims as an Agents chat does. Drawn inside the
 /// chat, a long message ran under the bar, its first lines out of reach (#3188). The chat hands its menu here
 /// (`ChatView`); the lifted copy brings what it needs from where it was pressed (`MessageLongPress`).
