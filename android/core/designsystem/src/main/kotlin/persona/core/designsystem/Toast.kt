@@ -1,6 +1,8 @@
 package persona.core.designsystem
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
@@ -97,11 +99,13 @@ fun JToastHost(state: JToastState, modifier: Modifier = Modifier) {
         state.dismiss(notice)
     }
     val motion = PersonaTheme.motion
+    // With reduced motion it is there, or gone, at once.
+    val still = PersonaTheme.reduceMotion
     Box(modifier.fillMaxWidth(), contentAlignment = Alignment.TopCenter) {
         AnimatedVisibility(
             visible = notice != null,
-            enter = slideInVertically(motion.enter()) { -it } + fadeIn(motion.enter()),
-            exit = slideOutVertically(motion.enter()) { -it } + fadeOut(motion.enter()),
+            enter = if (still) EnterTransition.None else slideInVertically(motion.enter()) { -it } + fadeIn(motion.enter()),
+            exit = if (still) ExitTransition.None else slideOutVertically(motion.enter()) { -it } + fadeOut(motion.enter()),
         ) {
             // The last notice stays drawn while it slides away.
             val shown = remember(notice) { notice } ?: return@AnimatedVisibility
