@@ -705,7 +705,6 @@ function onMessage(msg: Record<string, unknown>) {
   switch (msg.type) {
     case "hello": {
       helloHooks.forEach((f) => f()); // e.g. a hub that came back may serve a new web build (lib/new-version.ts)
-      void followDirections(); // missed while away: the tree again (the hub's rule: on every (re)connect)
       setCompatibilityFeatures(Array.isArray(msg.features) ? msg.features as string[] : []);
       const mesh = (msg.mesh as { hubs?: MeshHub[] } | undefined)?.hubs;
       set({
@@ -729,6 +728,7 @@ function onMessage(msg: Record<string, unknown>) {
       resendSeen();
       // resumed: the hub replays every broadcast missed since the cursor, nothing needs refetching
       if (!isResumed(msg)) {
+        void followDirections(); // the direction tree again: a `directions` may have been missed while away
         void refresh();
         void refreshAgentSessions();
         void refreshAgentPrefs();
