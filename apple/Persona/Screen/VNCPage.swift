@@ -139,9 +139,9 @@ struct VNCPage: View {
     /// not fit (the keyboard up), and scrolling when even that does not (the largest text sizes).
     @ViewBuilder private func bar<Content: View>(spacing: CGFloat, @ViewBuilder _ content: () -> Content) -> some View {
         if railed {
-            let tight = VStack(spacing: Theme.Space.xxs) { content() }.padding(.horizontal, Theme.Space.s).padding(.vertical, Theme.Space.xxs)
+            let tight = rail(spacing: spacing, tight: true, content)
             ViewThatFits(in: .vertical) {
-                VStack(spacing: spacing) { content() }.padding(Theme.Space.s)
+                rail(spacing: spacing, tight: false, content)
                 tight
                 ScrollView(.vertical) { tight }.scrollIndicators(.hidden)
             }
@@ -152,6 +152,13 @@ struct VNCPage: View {
         }
     }
 
+    /// A rail's buttons down the page's side, `tight` closer together.
+    private func rail<Content: View>(spacing: CGFloat, tight: Bool, @ViewBuilder _ content: () -> Content) -> some View {
+        VStack(spacing: tight ? Theme.Space.xxs : spacing) { content() }
+            .padding(.horizontal, Theme.Space.s)
+            .padding(.vertical, tight ? Theme.Space.xxs : Theme.Space.s)
+    }
+
     @ViewBuilder private var topBar: some View {
         #if os(iOS)
         let pip = VNCPiP.supported
@@ -159,7 +166,17 @@ struct VNCPage: View {
         let pip = false
         #endif
         if railed {
-            topRow(pipButton: pip, nameBelow: false)
+            // Down the leading rail, Picture in Picture under Close (#3075). Short of room (the keyboard up at the
+            // largest text sizes) the buttons close up first, then Picture in Picture goes into ⋯ so Close, Help and ⋯
+            // stay in sight, and only then does the rail scroll.
+            ViewThatFits(in: .vertical) {
+                rail(spacing: Theme.Space.s, tight: false) { topButtons(pipButton: pip, nameInRow: false) }
+                rail(spacing: Theme.Space.s, tight: true) { topButtons(pipButton: pip, nameInRow: false) }
+                rail(spacing: Theme.Space.s, tight: false) { topButtons(pipButton: false, nameInRow: false) }
+                rail(spacing: Theme.Space.s, tight: true) { topButtons(pipButton: false, nameInRow: false) }
+                ScrollView(.vertical) { rail(spacing: Theme.Space.s, tight: true) { topButtons(pipButton: false, nameInRow: false) } }
+                    .scrollIndicators(.hidden)
+            }
         } else {
             // One line where it fits, Picture in Picture right of Close (#3075). At the largest text sizes the name goes
             // under the buttons rather than being squeezed to a letter, and where the buttons themselves don't fit,
@@ -175,43 +192,46 @@ struct VNCPage: View {
 
     private func topRow(pipButton: Bool, nameBelow: Bool) -> some View {
         VStack(spacing: .zero) {
-            bar(spacing: Theme.Space.s) {
-                Button { close() } label: { barIcon(Theme.Icon.close) }
-                .themedButton()
-                .accessibilityLabel("Close Screen")
-                .accessibilityIdentifier("screen-close")
-                if pipButton {
-                    Button { toPictureInPicture() } label: { barIcon(Theme.Icon.pictureInPicture) }
-                        .themedButton()
-                        .accessibilityLabel("Picture in Picture")
-                        .accessibilityIdentifier("vnc-pip")
-                }
-                Spacer(minLength: Theme.Space.s)
-                if railed {
-                    // No room for the name down a rail: the dot, with the name and the phase for VoiceOver.
-                    Circle().fill(dot).scaledFrame(width: Theme.Size.dot, height: Theme.Size.dot)
-                        .accessibilityElement()
-                        .accessibilityLabel(name)
-                        .accessibilityValue(phaseLabel)
-                        .accessibilityIdentifier("screen-phase")
-                    Spacer(minLength: Theme.Space.s)
-                } else if !nameBelow {
-                    // Whatever the buttons leave, not a third of it beside the two spacers.
-                    nameAndPhase.layoutPriority(1)
-                    Spacer(minLength: Theme.Space.s)
-                }
-                Button { help = true } label: { barIcon(Theme.Icon.help) }
-                    .themedButton()
-                    .accessibilityLabel("Help")
-                    .accessibilityIdentifier("vnc-help")
-                moreMenu(pipItem: !pipButton)
-            }
+            bar(spacing: Theme.Space.s) { topButtons(pipButton: pipButton, nameInRow: !nameBelow) }
             if nameBelow {
                 nameAndPhase
                     .padding(.horizontal, Theme.Space.page)
                     .padding(.bottom, Theme.Space.s)
             }
         }
+    }
+
+    /// The top bar's buttons, across the page or down its leading rail; Picture in Picture next to Close or in ⋯.
+    @ViewBuilder private func topButtons(pipButton: Bool, nameInRow: Bool) -> some View {
+        Button { close() } label: { barIcon(Theme.Icon.close) }
+            .themedButton()
+            .accessibilityLabel("Close Screen")
+            .accessibilityIdentifier("screen-close")
+        if pipButton {
+            Button { toPictureInPicture() } label: { barIcon(Theme.Icon.pictureInPicture) }
+                .themedButton()
+                .accessibilityLabel("Picture in Picture")
+                .accessibilityIdentifier("vnc-pip")
+        }
+        Spacer(minLength: Theme.Space.s)
+        if railed {
+            // No room for the name down a rail: the dot, with the name and the phase for VoiceOver.
+            Circle().fill(dot).scaledFrame(width: Theme.Size.dot, height: Theme.Size.dot)
+                .accessibilityElement()
+                .accessibilityLabel(name)
+                .accessibilityValue(phaseLabel)
+                .accessibilityIdentifier("screen-phase")
+            Spacer(minLength: Theme.Space.s)
+        } else if nameInRow {
+            // Whatever the buttons leave, not a third of it beside the two spacers.
+            nameAndPhase.layoutPriority(1)
+            Spacer(minLength: Theme.Space.s)
+        }
+        Button { help = true } label: { barIcon(Theme.Icon.help) }
+            .themedButton()
+            .accessibilityLabel("Help")
+            .accessibilityIdentifier("vnc-help")
+        moreMenu(pipItem: !pipButton)
     }
 
     /// The dot, the Mac's name and the stage. Measured (`ViewThatFits`) as the dot, the name's first four letters and the

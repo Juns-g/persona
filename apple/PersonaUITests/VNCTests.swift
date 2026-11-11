@@ -417,6 +417,37 @@ final class VNCTests: XCTestCase {
         shot(app, "vnc-largest-text-more")
     }
 
+    /// On its side at the largest text size with the keyboard up (#3075) the leading rail is short: Close, Help and ⋯
+    /// stay above the keyboard, and Picture in Picture goes into ⋯ when it has no room under Close.
+    @MainActor func testTheRailFitsAtTheLargestTextWithTheKeyboardUp() throws {
+        let (app, _) = try signedInMachinePage(["-showPiPSource", "YES", "-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"])
+        defer { XCUIDevice.shared.orientation = .portrait }
+        let window = app.windows.firstMatch, more = app.buttons["vnc-more"].firstMatch
+        XCTAssertTrue(more.waitForExistence(timeout: 10), "no ⋯:\n\(app.debugDescription)")
+        XCUIDevice.shared.orientation = .landscapeLeft
+        let wide = NSPredicate { _, _ in window.frame.width > window.frame.height }
+        XCTAssertEqual(XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: wide, object: nil)], timeout: 10), .completed,
+                       "the page did not turn: \(window.frame)")
+        rest(2)
+        let keys = app.keyboards.firstMatch
+        if !keys.exists { app.buttons["vnc-keyboard"].firstMatch.tap() }
+        XCTAssertTrue(keys.waitForExistence(timeout: 5), "the keyboard:\n\(app.debugDescription)")
+        rest()
+        let top = keys.frame.minY
+        for id in ["screen-close", "vnc-pip", "vnc-help", "vnc-more"] {
+            let b = app.buttons[id].firstMatch
+            if id == "vnc-pip", !b.exists { continue }
+            XCTAssertTrue(b.isHittable && window.frame.contains(b.frame) && b.frame.maxY <= top + 1,
+                          "\(id) in sight above the keyboard: \(b.frame), the keyboard from \(top) in \(window.frame)")
+        }
+        let pipButton = app.buttons["vnc-pip"].exists
+        shot(app, "vnc-largest-text-landscape-keyboard"); hold("vnc-largest-text-landscape-keyboard")
+        more.tap()
+        let item = app.buttons.matching(NSPredicate(format: "label == '小窗' AND identifier != 'vnc-pip'")).firstMatch
+        XCTAssertEqual(item.waitForExistence(timeout: pipButton ? 2 : 5), !pipButton, "Picture in Picture under Close or in ⋯, once:\n\(app.debugDescription)")
+        shot(app, "vnc-largest-text-landscape-more")
+    }
+
     /// On its side (#3075): the page turns to either landscape, the picture takes the height between two rails of buttons
     /// inside the safe area (Close then Picture in Picture down the leading one), and a tap lands on the Mac where the
     /// finger is. Upright again and closed, the app stays upright when the phone turns.
