@@ -131,8 +131,8 @@ final class MessageLiftUITests: XCTestCase {
     /// Long-presses the long answer's last line, just above the composer: the lift opens at its end.
     @MainActor private func liftTheLongAnswerAtItsEnd() { liftAt("有问题的话告诉我") }
 
-    /// Long-presses the line with these words, the newest answer's last.
-    @MainActor private func liftAt(_ words: String) {
+    /// Long-presses the line with these words, the newest answer's last. False: no bar came up.
+    @MainActor @discardableResult private func liftAt(_ words: String) -> Bool {
         let end = text(words)
         XCTAssertTrue(end.waitForExistence(timeout: 20), "missing the answer")
         sleep(2) // the chat settles at its newest; the header folds
@@ -144,8 +144,26 @@ final class MessageLiftUITests: XCTestCase {
         let shown = f.intersection(window.insetBy(dx: 0, dy: window.height * 0.15))
         let at = shown.isNull ? CGPoint(x: f.midX, y: f.midY) : CGPoint(x: shown.midX, y: shown.midY)
         app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: at.x, dy: at.y)).press(forDuration: 0.8)
-        XCTAssertTrue(app.buttons["复制"].firstMatch.waitForExistence(timeout: 3), "no bar")
+        let bar = app.buttons["复制"].firstMatch.waitForExistence(timeout: 3)
+        XCTAssertTrue(bar, "no bar")
         sleep(1)
+        return bar
+    }
+
+    /// Scrolls the chat back (slowly, no fling) until the message with these words starts below the top bar, so a press
+    /// lands on it: the message before the newest answer is mostly above the screen.
+    @MainActor private func reveal(_ words: String) {
+        let window = app.windows.firstMatch.frame, clear = window.height * 0.2
+        let origin = app.coordinate(withNormalizedOffset: .zero)
+        for _ in 0..<4 {
+            let f = text(words).frame
+            guard f.minY < clear else { return }
+            let by = min(clear - f.minY + 8, window.height * 0.45), from = window.height * 0.3
+            origin.withOffset(CGVector(dx: window.midX, dy: from))
+                .press(forDuration: 0.1, thenDragTo: origin.withOffset(CGVector(dx: window.midX, dy: from + by)),
+                       withVelocity: .slow, thenHoldForDuration: 0.5)
+            sleep(1)
+        }
     }
 
     /// Drags down on the lifted copy, above the bar, until its first line shows (at most `tries` times).
@@ -297,26 +315,33 @@ final class MessageLiftUITests: XCTestCase {
     /// chat drew them. Lifted, a message with no room for its bar beside it moves (all of it, upright, `moves`); the
     /// text view over the selected words lays them out as the chat did (`selectMatches`), within half a point.
     @MainActor private func checkTheWordsStay(_ words: String, _ name: String, moves: Bool = false, selectMatches: Bool = true,
-                                             close: Bool = false) {
-        XCTAssertTrue(text(words).waitForExistence(timeout: 20), "\(name): missing \(words)")
+                                             close: Bool = false, reveal: Bool = false) {
+        guard text(words).waitForExistence(timeout: 20) else { return XCTFail("\(name): missing \(words)") }
+        // Closed again even when a step fails, so the next check finds the chat as it was.
+        defer { if close, self.lifted.exists { closeTheLift(name) } }
         sleep(2)
+        if reveal { self.reveal(words) }
         shot(name + "-normal")
-        liftAt(words)
+        guard liftAt(words) else { return XCTFail("\(name): did not lift") }
         let lifted = lines()
         let dy = (lifted.lift.first?.baseline ?? 0) - (lifted.chat.first?.baseline ?? 0)
         if !moves { XCTAssertLessThanOrEqual(abs(dy), 0.5, "\(name): lifted, it moved by \(dy)") }
         if let d = Self.difference(lifted.chat, lifted.lift, dy: dy) { XCTFail("\(name): lifted, its words moved: \(d)") }
+        print("LIFT-LINES \(name) dy=\(dy)\n chat=\(lifted.chat)\n lift=\(lifted.lift)")
         shot(name + "-lifted")
-        app.buttons["选择文本"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.85)).tap()
-        XCTAssertTrue(app.textViews["lift-text"].waitForExistence(timeout: 5), "\(name): 选择文本 did not select in place")
+        let select = app.buttons["选择文本"].firstMatch
+        guard select.exists else { return XCTFail("\(name): no 选择文本") }
+        select.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.85)).tap()
+        guard app.textViews["lift-text"].waitForExistence(timeout: 5) else {
+            return XCTFail("\(name): 选择文本 did not select in place")
+        }
         let selected = lines(selecting: true)
         if let d = Self.difference(lifted.lift, selected.lift) { XCTFail("\(name): selecting, its words moved: \(d)") }
         if selectMatches, let d = Self.difference(selected.lift, selected.select, sameEngine: false) {
             XCTFail("\(name): the text view over the words lays them out differently: \(d)")
         }
-        print("LIFT-LINES \(name) dy=\(dy)\n chat=\(lifted.chat)\n lift=\(lifted.lift)\n select=\(selected.select)")
+        print("LIFT-LINES \(name) select=\(selected.select)")
         shot(name + "-selected")
-        if close { closeTheLift(name) }
     }
 
     /// Two taps beside the lifted message: the first ends the selecting, the second puts it back.
@@ -393,7 +418,7 @@ final class MessageLiftUITests: XCTestCase {
                     launchWithLines(chat, persona: persona, style: style)
                     let tag = "matrix-\(style)-\(persona ? "persona" : "agents")"
                     checkTheWordsStay("在 hub 上运行下面这条", tag + "-answer", moves: true, close: true)
-                    checkTheWordsStay("你先把管理密钥存到本机文件", tag + "-mine", moves: true)
+                    checkTheWordsStay("你先把管理密钥存到本机文件", tag + "-mine", moves: true, reveal: true)
                 }
             }
         }
