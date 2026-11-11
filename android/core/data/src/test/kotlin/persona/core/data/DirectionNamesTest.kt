@@ -1,19 +1,17 @@
 package persona.core.data
 
 import kotlinx.serialization.json.Json
-import persona.core.contracts.AssistantLeadersEvent
-import persona.core.contracts.ServerEvent
-import persona.core.contracts.api.LeaderCounts
-import persona.core.contracts.api.LeaderLine
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import persona.core.contracts.DirectionsEvent
+import persona.core.contracts.ServerEvent
+import persona.core.contracts.api.LeaderCounts
 
-// The drawer's Directions (docs/assistant/unified-entry.md "Leader conversations"): `assistant.leaders` in the hub's order,
-// named by GET /api/v1/assistant/leaders.
+// The drawer's directions (docs/assistant/unified-entry.md "The direction tree"): `assistant.leaders` in the hub's order, with
+// names and open tasks from GET /api/v1/assistant/directions/tree (#4352).
 class DirectionNamesTest {
     private fun json(text: String): JsonObject = Json.parseToJsonElement(text).jsonObject
 
@@ -22,30 +20,26 @@ class DirectionNamesTest {
         assertEquals(emptyList<String>(), leadersOf(json("""{"main": "m"}""")))
     }
 
-    // #4331: the same answer says what each leader has open, for its row 「在做 N · 等你 N」.
-    @Test fun countsComeWithTheLeaders() {
-        val counts = leaderCountsOf(json("""{"leaders": [
-            {"id": "a", "counts": {"working": 2, "needs_you": 1}},
-            {"id": "b"},
-            {"id": "c", "counts": {"working": 0, "needs_you": 0}, "ended": true},
-            {"id": "", "counts": {"working": 5}}
+    // #4352: the tree lists the current directions in order, then the secretary group (skipped), each with its counts.
+    @Test fun theTreeListsTheDirectionsWithTheirNamesAndCounts() {
+        val tree = directionTreeOf(json("""{"directions": [
+            {"id": "a", "name": " Growth ", "counts": {"working": 2, "needs_you": 1, "stuck": 0, "review": 3}},
+            {"id": "b", "name": "", "counts": {"working": 0, "needs_you": 0, "stuck": 1, "review": 0}},
+            {"id": "", "name": "Nobody"},
+            {"id": "m", "name": "", "secretary": true, "counts": {"working": 9, "needs_you": 9, "stuck": 9, "review": 9}}
         ]}"""))
-        assertEquals(mapOf("a" to LeaderCounts(working = 2, needsYou = 1), "b" to LeaderCounts()), counts)
-        assertEquals(emptyMap<String, LeaderCounts>(), leaderCountsOf(json("{}")))
+        assertEquals(listOf("a", "b"), tree.ids)
+        assertEquals(mapOf("a" to "Growth"), tree.names)
+        assertEquals(mapOf("a" to LeaderCounts(working = 2, needsYou = 1), "b" to LeaderCounts()), tree.counts)
+        assertEquals(DirectionTree(), directionTreeOf(json("{}")))
     }
 
-    // An open drawer follows the hub: leaders, names and counts, in its order (#4331).
-    @Test fun theHubPushesTheLeadersWithTheirNamesAndCounts() {
-        val event = ServerEvent.decode("""{"type": "assistant_leaders", "manager": "second", "leaders": [
-            {"id": "a", "title": "Growth", "name": "Growth work", "counts": {"working": 1, "needs_you": 2}}
-        ]}""")
-        assertTrue(event is AssistantLeadersEvent)
-        val leaders = event as AssistantLeadersEvent
-        assertEquals("second", leaders.manager)
-        assertEquals(listOf(LeaderLine("a", "Growth", "Growth work", LeaderCounts(working = 1, needsYou = 2))), leaders.leaders)
-        val own = ServerEvent.decode("""{"type": "assistant_leaders", "leaders": []}""") as AssistantLeadersEvent
-        assertNull("no manager: the default assistant's", own.manager)
-        assertTrue(own.leaders.isEmpty())
+    // The hub says only that the tree changed; the drawer reads it again (#4352).
+    @Test fun theHubSaysTheTreeChanged() {
+        assertEquals(DirectionsEvent, ServerEvent.decode("""{"type": "directions"}"""))
+        assertEquals("a payload changes nothing", DirectionsEvent,
+            ServerEvent.decode("""{"type": "directions", "manager": "second"}"""))
+        assertTrue(ServerEvent.decode("""{"type": "not_directions"}""") == null)
     }
 
     @Test fun namesSkipEndedAndBlankOnes() {

@@ -1125,19 +1125,29 @@ nonisolated struct APIClient: Sendable {
     }
     func assistant() async throws -> AssistantState { owned(try await get("/api/v1/assistant")) }
     /// A direction as `GET /api/v1/assistant/leaders` lists it (#3519, #3695): its leader conversation's id and the name
-    /// the hub gives the direction (the name set, else its project's, else the title without its "MMDD | kind | " prefix),
-    /// and how much of its work is in flight (#4331).
+    /// the hub gives the direction (the name set, else its project's, else the title without its "MMDD | kind | " prefix).
     struct LeaderInfo: Codable, Sendable, Equatable {
         var id: String
         var name: String?
         var ended: Bool?
-        /// The conversation's own title; the hub's `assistant_leaders` push carries it too.
-        var title: String? = nil
-        /// What the direction holds right now; nil from a hub that does not count.
-        var counts: LeaderCounts? = nil
     }
-    /// A direction's work at this moment (#4331): what its row reads as "N working · N need you".
-    struct LeaderCounts: Codable, Sendable, Equatable {
+    /// The direction tree (#4352, `GET /api/v1/assistant/directions/tree`): every current direction with the open tasks
+    /// it supervises, then the secretary group. Clients read the names, the counts and the order here; no client works
+    /// out the grouping itself.
+    struct DirectionsTree: Decodable, Sendable, Equatable {
+        var directions: [TreeDirection]
+    }
+    /// One direction of the tree, or its secretary group (`secretary`: the main conversation's, not a direction the
+    /// sidebar lists).
+    struct TreeDirection: Decodable, Sendable, Equatable {
+        var id: String
+        var name: String?
+        var secretary: Bool?
+        var counts: DirectionCounts?
+    }
+    /// How many of a direction's listed tasks are in each state (#4352): its row reads the first two as
+    /// "N working · N need you".
+    struct DirectionCounts: Codable, Sendable, Equatable {
         var working: Int
         var needsYou: Int
         enum CodingKeys: String, CodingKey { case working, needsYou = "needs_you" }
@@ -1173,12 +1183,26 @@ nonisolated struct APIClient: Sendable {
         }
         return out
     }
-    /// The directions' counts by leader conversation id: current ones that report counts.
-    static func directionCounts(_ list: [LeaderInfo]) -> [String: LeaderCounts] {
-        var out: [String: LeaderCounts] = [:]
-        for l in list where !(l.ended ?? false) && !l.id.isEmpty {
-            if let counts = l.counts { out[l.id] = counts }
+    /// The direction tree (#4352): a hub older than it answers 404, and the caller keeps what `leaders()` gave it.
+    func directionsTree() async throws -> DirectionsTree {
+        try await get("/api/v1/assistant/directions/tree", as: DirectionsTree.self)
+    }
+    /// The tree's current directions, its secretary group left out, in its order.
+    static func directions(_ tree: DirectionsTree) -> [TreeDirection] {
+        tree.directions.filter { $0.secretary != true && !$0.id.isEmpty }
+    }
+    /// The directions' names from the tree, by leader conversation id.
+    static func directionNames(_ tree: DirectionsTree) -> [String: String] {
+        var out: [String: String] = [:]
+        for d in directions(tree) {
+            if let name = d.name?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty { out[d.id] = name }
         }
+        return out
+    }
+    /// The directions' counts from the tree, by leader conversation id.
+    static func directionCounts(_ tree: DirectionsTree) -> [String: DirectionCounts] {
+        var out: [String: DirectionCounts] = [:]
+        for d in directions(tree) { if let counts = d.counts { out[d.id] = counts } }
         return out
     }
     /// `st` with its conversations stamped with the manager this client named: the hub relays another manager's answer as

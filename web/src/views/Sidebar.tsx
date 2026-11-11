@@ -257,7 +257,7 @@ export function Sidebar({ route, onSearch, onNewAgent, onNavigate, workspaceActi
   const activeKey = useActiveKey(route);
   // Persona chats are the main conversation (its row above) and the leaders, "常驻" (#4331): making a chat one and ending
   // it is the menu's 设为常驻 / 取消常驻, on the hub for every device; every other chat is under 全部对话. Each says what
-  // it has open, Working and Waiting on you, and an open sidebar follows the hub's `assistant_leaders` (lib/store.ts).
+  // it has open, Working and Waiting on you, and an open sidebar follows the hub's `directions` (lib/store.ts).
   const leaders = (assistant?.leaders ?? []).filter((id) => id !== assistant?.main);
   const isLeader = (id: string) => leaders.includes(id);
   const directions = leaders.map((id) => assistant?.conversations.find((c) => c.session_id === id)).filter((c): c is Session => !!c);

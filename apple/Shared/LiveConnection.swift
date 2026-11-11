@@ -74,9 +74,9 @@ nonisolated enum ServerEvent: Sendable {
     /// The hub's roster of managers changed (docs/assistant/managers.md): Settings › Managers reads it again. Sent only to a
     /// socket that asked for feature `managers` (`queryItems`).
     case managers
-    /// The assistant's directions changed on the hub (#4331): its current leaders in order, never the main
-    /// conversation, with their names and the work they hold. `manager`: whose assistant's (nil: the hub's own).
-    case assistantLeaders(manager: String?, [APIClient.LeaderInfo])
+    /// The direction tree changed on the hub (#4352): a to-do, an Agent's session, a direction or its name. No payload:
+    /// the clients read `GET /api/v1/assistant/directions/tree` again, and on every (re)connect.
+    case directions
     case assistantFeed(FeedItem)
     case assistantView(ExtensionAssistantView)
     case assistantViewAction(conversation: String, action: ExtensionViewAction)
@@ -153,8 +153,6 @@ nonisolated enum ServerEvent: Sendable {
         var hubID: String?
         var hubName: String?
         var mesh: MeshField?
-        /// assistant_leaders': the directions in order.
-        var leaders: [APIClient.LeaderInfo]?
         var item: FeedItem?
         var view: ExtensionAssistantView?
         /// Keep this raw so another event's optional action string cannot break its envelope decoding.
@@ -186,7 +184,6 @@ nonisolated enum ServerEvent: Sendable {
             case type, machines, sessions, upsert, remove, revision, items, backlog, text, status, interaction, id, name, args, event, message, error, revs, fleet, history
             case features, epoch, seq, full, cols, rows, data, unsupported, state, desktops, mesh, channel, build, update, item, view, action, key, conversation, plan
             case plugin, badge, invalidate, cwd, dirs, git, operation, auth, source, conversations, account, reason, answers, resolution, manager
-            case leaders
             case effective
             case answeredBy = "answered_by"
             case extensionID = "extension"
@@ -275,7 +272,7 @@ nonisolated enum ServerEvent: Sendable {
             guard (e.effective ?? e.id).map({ !$0.isEmpty }) == true else { return nil }
             return .look(id: e.id, effective: e.effective)
         case "managers": return .managers
-        case "assistant_leaders": return e.leaders.map { .assistantLeaders(manager: e.manager?.string, $0) }
+        case "directions": return .directions
         case "assistant_feed": return e.item.map { .assistantFeed($0) }
         case "assistant_view":
             guard let view = e.view, !view.id.isEmpty, view.version > 0,
@@ -337,7 +334,7 @@ nonisolated extension ServerEvent {
         case .sessionsDelta(let machine, let upsert, let remove):
             return .sessionsDelta(machineID: machine, upsert: upsert.map { var s = $0; s.group = group; return s }, remove: remove)
         case .sessionsList, .hello, .interactionResolved, .interactionReanswered, .toolCall, .revs, .lark, .messaging, .agents, .inbox, .fleet, .hubUpdate, .desktops, .todos,
-             .personas, .look, .managers, .assistantLeaders, .assistantFeed, .assistantView, .assistantViewAction, .assistantViewBlock, .taskPlan, .pluginBadge,
+             .personas, .look, .managers, .directions, .assistantFeed, .assistantView, .assistantViewAction, .assistantViewBlock, .taskPlan, .pluginBadge,
              .extensionInvalidate, .fsChanged, .extensionOperation, .extensionAuth: return self
         }
     }

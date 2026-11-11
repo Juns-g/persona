@@ -2,21 +2,24 @@ import Foundation
 import Testing
 @testable import Persona
 
-/// The directions' counts and the hub's `assistant_leaders` push (#4331).
+/// The directions' names, counts and order from the hub's tree, and its `directions` push (#4331, #4352).
 struct AssistantLeadersTests {
-    /// Each direction in GET /api/v1/assistant/leaders carries how much of its work is in flight.
-    @Test func leadersCarryTheirCounts() throws {
+    /// Every direction of the tree carries its name and how much of its work is in flight; the secretary group is not one
+    /// the sidebar lists, and the two counts the row shows are `working` and `needs_you`.
+    @Test func theTreeCarriesTheNamesAndCounts() throws {
         let raw = #"""
-        {"leaders":[{"id":"lead-a","name":"Product","counts":{"working":3,"needs_you":1}},
-                    {"id":"lead-b","title":"1110 | explore | x"},
-                    {"id":"old","name":"Done","ended":true,"counts":{"working":9,"needs_you":9}}]}
+        {"directions":[
+            {"id":"lead-a","name":"Product","counts":{"working":3,"needs_you":1,"stuck":0,"review":2},"tasks":[]},
+            {"id":"lead-b","name":"Infra","counts":{"working":0,"needs_you":0,"stuck":0,"review":0},"tasks":[]},
+            {"id":"main","name":"","secretary":true,"counts":{"working":7,"needs_you":7},"tasks":[]}]}
         """#
-        struct Body: Decodable { var leaders: [APIClient.LeaderInfo]? }
-        let list = try JSON.decoder.decode(Body.self, from: Data(raw.utf8)).leaders ?? []
-        #expect(list.count == 3)
-        #expect(list[0].counts == APIClient.LeaderCounts(working: 3, needsYou: 1))
-        #expect(list[1].counts == nil)
-        #expect(APIClient.directionCounts(list) == ["lead-a": APIClient.LeaderCounts(working: 3, needsYou: 1)])
+        let tree = try JSON.decoder.decode(APIClient.DirectionsTree.self, from: Data(raw.utf8))
+        #expect(APIClient.directions(tree).map(\.id) == ["lead-a", "lead-b"])
+        #expect(APIClient.directionNames(tree) == ["lead-a": "Product", "lead-b": "Infra"])
+        #expect(APIClient.directionCounts(tree) == [
+            "lead-a": APIClient.DirectionCounts(working: 3, needsYou: 1),
+            "lead-b": APIClient.DirectionCounts(working: 0, needsYou: 0),
+        ])
     }
 
     /// The row reads "N working · N need you", only the non-zero parts, and nothing while both are zero.
@@ -34,32 +37,12 @@ struct AssistantLeadersTests {
         #expect(both?.contains("·") == true)
     }
 
-    /// The hub's push: its manager, and each direction's id, name and counts, in its order.
-    @Test func theLeadersPushIsRead() throws {
-        let raw = #"""
-        {"type":"assistant_leaders","manager":"assistant","leaders":[
-            {"id":"lead-a","title":"1110 | explore | a","name":"Product","counts":{"working":2,"needs_you":1}},
-            {"id":"lead-b","title":"1110 | explore | b"}]}
-        """#
-        let event = try #require(ServerEvent.decode(Data(raw.utf8)))
-        guard case .assistantLeaders(let manager, let leaders) = event else {
-            Issue.record("not assistant_leaders")
+    /// The hub's push names no directions: the clients read the tree again on it (and on every (re)connect).
+    @Test func theDirectionsPushIsRead() throws {
+        let event = try #require(ServerEvent.decode(Data(#"{"type":"directions"}"#.utf8)))
+        guard case .directions = event else {
+            Issue.record("not directions")
             return
         }
-        #expect(manager == "assistant")
-        #expect(leaders.map(\.id) == ["lead-a", "lead-b"])
-        #expect(leaders.first?.name == "Product")
-        #expect(leaders.first?.counts == APIClient.LeaderCounts(working: 2, needsYou: 1))
-    }
-
-    /// An empty push is how the hub says the last direction ended: it still arrives, with no manager named.
-    @Test func anEmptyPushClears() throws {
-        let event = try #require(ServerEvent.decode(Data(#"{"type":"assistant_leaders","leaders":[]}"#.utf8)))
-        guard case .assistantLeaders(let manager, let leaders) = event else {
-            Issue.record("not assistant_leaders")
-            return
-        }
-        #expect(manager == nil)
-        #expect(leaders.isEmpty)
     }
 }

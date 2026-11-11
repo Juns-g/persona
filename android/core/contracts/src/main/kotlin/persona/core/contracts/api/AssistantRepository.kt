@@ -7,22 +7,13 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
 /**
- * A current leader's open tasks (#4331), by the same rules the To-dos page files them under: [working] in its Working
- * section, [needsYou] waiting on the user. Both zero when it has none.
+ * A current leader's open tasks (#4352), from `GET /api/v1/assistant/directions/tree`'s `counts`: [working] in its
+ * Working section, [needsYou] waiting on the user. Both zero when it has none.
  */
 @Serializable
 data class LeaderCounts(
     val working: Int = 0,
     @SerialName("needs_you") val needsYou: Int = 0,
-)
-
-/**
- * A current leader as `GET /api/v1/assistant/leaders` and the hub's `assistant_leaders` message list it (#4331): its
- * conversation id, [title] (the conversation's title), [name] (the direction's name) and its open tasks' [counts].
- */
-@Serializable
-data class LeaderLine(
-    val id: String = "", val title: String = "", val name: String = "", val counts: LeaderCounts = LeaderCounts(),
 )
 
 data class AssistantSnapshot(
@@ -36,11 +27,14 @@ data class AssistantSnapshot(
      * order: the drawer's 常驻 group. Empty when there are none or from an older hub.
      */
     val leaders: List<String> = emptyList(),
-    /** Each direction's name by leader conversation id (`GET /api/v1/assistant/leaders`), shown instead of its title. */
+    /**
+     * Each direction's name by leader conversation id (`GET /api/v1/assistant/directions/tree`, else the leaders
+     * answer's), shown instead of its title.
+     */
     val directionNames: Map<String, String> = emptyMap(),
     /**
-     * Each current leader's open tasks (`GET /api/v1/assistant/leaders`'s `counts`), by conversation id (#4331): its
-     * row says 「在做 N · 等你 N」. A leader without open tasks is left out or says zero; empty from an older hub.
+     * Each current leader's open tasks (the direction tree's `counts`, #4352), by conversation id: its row says
+     * 「在做 N · 等你 N」. A leader without open tasks is left out or says zero; empty from an older hub.
      */
     val leaderCounts: Map<String, LeaderCounts> = emptyMap(),
 )

@@ -1,6 +1,6 @@
 package persona.core.data
 
-import persona.core.contracts.AssistantLeadersEvent
+import persona.core.contracts.DirectionsEvent
 import persona.core.contracts.CoreText
 import persona.core.contracts.CoreText.Key
 import persona.core.contracts.JsonCodec
@@ -68,17 +68,35 @@ class RealAssistantRepository(
         )
     }
 
-    /** Each current leader's name and open tasks (none without leaders); a hub that cannot list them keeps [held]. */
-    private suspend fun leaderInfo(request: Request, leaders: List<String>, held: LeaderInfo): LeaderInfo {
-        if (leaders.isEmpty()) return LeaderInfo.EMPTY
+    /**
+     * The direction tree (#4352): the current directions in the hub's order, without the secretary group. The hub answers
+     * it for the default manager alone; null where it cannot be read (an older hub answers 404), which changes nothing.
+     */
+    private suspend fun directionTree(request: Request): DirectionTree? {
+        if (request.manager != null) return null
         return try {
-            val data = request.transport.assistantLeadersOf(request.owner)
-            LeaderInfo(directionNamesOf(data), leaderCountsOf(data))
+            directionTreeOf(request.transport.directionsTreeOf(request.manager))
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            held
+            null
         }
+    }
+
+    /**
+     * What the drawer shows: the tree's ids in the hub's order, names and open tasks where it answers. A hub without the
+     * tree (an older one answers 404) keeps [held] and takes the leaders answer's names, which have no counts.
+     */
+    private suspend fun directionsOf(request: Request, held: LeaderInfo): LeaderInfo {
+        directionTree(request)?.let { return LeaderInfo(it.ids, it.names, it.counts) }
+        val names = try {
+            directionNamesOf(request.transport.assistantLeadersOf(request.owner))
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            return held
+        }
+        return LeaderInfo(held.ids, names.ifEmpty { held.names }, held.counts)
     }
 
     private fun noteConversation(id: String, request: Request) {
@@ -107,16 +125,17 @@ class RealAssistantRepository(
                 currentPins.value = state.pins.sessions.mapNotNull(::sessionPath).toSet()
             }
         }
-        // A leader made or ended, renamed, or its open tasks changed: the drawer follows at once, whichever device did it.
+        // The direction tree changed (a direction made, ended or renamed, a to-do or an Agent: `directions`, #4352): the
+        // drawer follows at once, whichever device did it, by reading the tree again.
         scope.launch {
-            events.filterIsInstance<AssistantLeadersEvent>().collect { event ->
+            events.filterIsInstance<DirectionsEvent>().collect {
                 try {
-                    applyLeaders(event)
+                    applyDirections()
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
                     Logger.getLogger(RealAssistantRepository::class.java.name).log(
-                        Level.WARNING, "Assistant leaders update failed", e,
+                        Level.WARNING, "Directions update failed", e,
                     )
                 }
             }
@@ -169,28 +188,29 @@ class RealAssistantRepository(
     }
 
     /**
-     * `assistant_leaders` (#4331): the current leaders in the hub's order with their names and open tasks, applied as they
-     * come. Another manager's is not this page's. An id no conversation on the page has (a leader made elsewhere, or one
-     * this list has not met) needs the conversations too, so the page refreshes.
+     * `directions` (#4352): no payload, so the tree is read again. It is the default manager's alone, and not while
+     * another manager's page is shown. An id no conversation on the page has (a direction made elsewhere, or one this
+     * list has not met) needs the conversations too, so the page refreshes.
      */
-    private suspend fun applyLeaders(event: AssistantLeadersEvent) {
-        val (request, missing) = lock.withLock {
+    private suspend fun applyDirections() {
+        val request = lock.withLock {
             val transport = connection.current.value ?: return
             val choice = AssistantManagerChoice.current.value
-            if (!choice.owns(event.manager)) return
             val request = Request(transport, choice)
+            if (request.manager != null) return
             if (restoredScope != request.key || current.value.managerId != request.owner) return
+            request
+        }
+        val tree = directionTree(request) ?: return
+        val missing = lock.withLock {
+            if (!selected(request)) return
             val snapshot = current.value
             val main = snapshot.mainSession?.sessionId
-            val lines = event.leaders.filter { it.id.isNotEmpty() && it.id != main }
+            val ids = tree.ids.filter { it.isNotEmpty() && it != main }
             val known = snapshot.conversations.mapTo(HashSet()) { it.sessionId }
-            current.value = snapshot.copy(
-                leaders = lines.map { it.id },
-                directionNames = lines.mapNotNull { line -> line.name.trim().takeIf(String::isNotEmpty)?.let { line.id to it } }.toMap(),
-                leaderCounts = lines.associate { it.id to it.counts },
-            )
+            current.value = snapshot.copy(leaders = ids, directionNames = tree.names, leaderCounts = tree.counts)
             cached[request.key] = current.value
-            request to lines.any { it.id !in known }
+            ids.any { it !in known }
         }
         if (missing) refresh(request)
     }
@@ -205,16 +225,16 @@ class RealAssistantRepository(
         }
         // Network calls never hold the page/cache mutex: a slow manager cannot block switching away.
         val data = request.transport.assistantOf(request.owner)
-        // Names and counts are asked for on every refresh: a leader's open tasks change without the leaders changing.
+        // The tree is read on every refresh and after a reconnect: a direction's open tasks change without the
+        // leaders changing, and the tree is also where the order and names come from (#4352).
         val fresh = decode(data, request)
         val held = current.value.takeIf { it.managerId == request.owner }
-        val info = leaderInfo(request, fresh.leaders,
-            held?.let { LeaderInfo(it.directionNames, it.leaderCounts) } ?: LeaderInfo.EMPTY)
+        val info = directionsOf(request, held?.let { LeaderInfo(it.leaders, it.directionNames, it.leaderCounts) } ?: LeaderInfo.EMPTY)
         val pins = if (preferences != null) preferences.preferences.value.pins.sessions.mapNotNull(::sessionPath).toSet()
             else request.transport.pins().array("sessions").mapNotNull { (it as? JsonPrimitive)?.contentOrNull?.let(::sessionPath) }.toSet()
         lock.withLock {
             if (!selected(request) || version != refreshVersion) return
-            val snapshot = fresh.copy(directionNames = info.names, leaderCounts = info.counts)
+            val snapshot = fresh.copy(leaders = info.ids ?: fresh.leaders, directionNames = info.names, leaderCounts = info.counts)
             cached[request.key] = snapshot
             current.value = snapshot
             currentPins.value = pins
@@ -319,18 +339,39 @@ internal fun directionNamesOf(data: JsonObject): Map<String, String> = data.arra
     .mapNotNull { l -> l.string("id").takeIf { it.isNotEmpty() }?.let { id -> l.string("name").trim().takeIf { it.isNotEmpty() }?.let { id to it } } }
     .toMap()
 
-/** `GET /api/v1/assistant/leaders`'s open tasks by leader conversation id (#4331): current directions only. */
-internal fun leaderCountsOf(data: JsonObject): Map<String, LeaderCounts> = data.array("leaders").mapNotNull { it as? JsonObject }
-    .filter { (it["ended"] as? JsonPrimitive)?.booleanOrNull != true }
-    .mapNotNull { l -> l.string("id").takeIf { it.isNotEmpty() }?.let { id -> id to l.counts() } }
-    .toMap()
+/**
+ * `GET /api/v1/assistant/directions/tree` (#4352): the current directions in the hub's order, never the secretary group,
+ * with their names and open tasks. Empty where the hub lists none.
+ */
+internal data class DirectionTree(
+    val ids: List<String> = emptyList(), val names: Map<String, String> = emptyMap(),
+    val counts: Map<String, LeaderCounts> = emptyMap(),
+)
+
+internal fun directionTreeOf(data: JsonObject): DirectionTree {
+    val directions = data.array("directions").mapNotNull { it as? JsonObject }.filter { !it.flag("secretary") }
+        .mapNotNull { direction -> direction.string("id").takeIf(String::isNotEmpty)?.let { id -> id to direction } }
+    return DirectionTree(
+        ids = directions.map { it.first },
+        names = directions.mapNotNull { (id, direction) ->
+            direction.string("name").trim().takeIf(String::isNotEmpty)?.let { id to it }
+        }.toMap(),
+        counts = directions.associate { (id, direction) -> id to direction.counts() },
+    )
+}
 
 private fun JsonObject.counts(): LeaderCounts = obj("counts")?.let { c -> LeaderCounts(c.number("working")?.toInt() ?: 0, c.number("needs_you")?.toInt() ?: 0) }
     ?: LeaderCounts()
 
-/** A current leader's name and open tasks, as `GET /api/v1/assistant/leaders` has them. */
-private data class LeaderInfo(val names: Map<String, String>, val counts: Map<String, LeaderCounts>) {
-    companion object { val EMPTY = LeaderInfo(emptyMap(), emptyMap()) }
+/**
+ * The directions to show: their ids in the hub's order (null: not read, keep the ones we have), their names and open
+ * tasks (`GET /api/v1/assistant/directions/tree`, or the leaders answer's names alone).
+ */
+private data class LeaderInfo(
+    val ids: List<String>? = null, val names: Map<String, String> = emptyMap(),
+    val counts: Map<String, LeaderCounts> = emptyMap(),
+) {
+    companion object { val EMPTY = LeaderInfo() }
 }
 
 internal fun JsonObject.string(key: String): String = (this[key] as? JsonPrimitive)?.contentOrNull.orEmpty()
