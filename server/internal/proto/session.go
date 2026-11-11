@@ -76,6 +76,10 @@ type Session struct {
 	CanFork          bool `json:"can_fork,omitempty"`
 	StartedByPersona bool `json:"started_by_persona"`
 	Assistant        bool `json:"assistant"` // runs in the assistant directory (the app's "Chat" tab)
+	// SuggestionRisky: Suggestion (below) names a command, a path, a link, a secret-looking string or a risky action (delete,
+	// push, deploy, send…): the apps fill it in but offer no one-tap send (#4644). Set by the manager;
+	// kept with these flags, where it fits in their padding: a larger Session costs every copy of a list.
+	SuggestionRisky bool `json:"suggestion_risky,omitempty"`
 	// Archived: a retained conversation moved out of the normal list. Assistant
 	// conversations and Claude/Codex Agents are managed by their owning manager.
 	Archived bool   `json:"archived,omitempty"`

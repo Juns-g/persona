@@ -107,6 +107,10 @@ type Settings struct {
 	// the foreground (Bash commands, subagents) to the background, so the message is taken up at once instead of after
 	// them (Claude Code 2.1.139 or later, node/assistant_interject.go). nil is off (the default).
 	InterjectBackground *bool `json:"interject_background,omitempty"`
+	// NextSuggestions: chats that have no suggestion of their own (Persona's conversations, Codex and the other
+	// runtimes) get the next message suggested by the suggest.next model after a turn (#4644, suggest_next.go). nil is
+	// off (the default).
+	NextSuggestions *bool `json:"next_suggestions,omitempty"`
 }
 
 // FormerMain is a main conversation that was replaced, and until when it was the main one.
@@ -463,6 +467,8 @@ type assistantView struct {
 	AgentTasks bool `json:"agent_tasks"`
 	// InboxSignals is in effect, like DoneNeedsDelivery.
 	InboxSignals bool `json:"inbox_signals"`
+	// NextSuggestions is in effect, like DoneNeedsDelivery.
+	NextSuggestions bool `json:"next_suggestions"`
 }
 
 // view is GET /api/v1/assistant; withArchived lists archived conversations too (flagged `archived`). It lists the
@@ -488,7 +494,8 @@ func (s *Service) view(ctx context.Context, withArchived bool, space ...string) 
 		ReviewSamplePercent: s.reviewSamplePercent(ctx),
 		InterjectBackground: v.InterjectBackground != nil && *v.InterjectBackground,
 		AgentTasks:          v.AgentTasks != nil && *v.AgentTasks,
-		InboxSignals:        v.InboxSignals != nil && *v.InboxSignals}
+		InboxSignals:        v.InboxSignals != nil && *v.InboxSignals,
+		NextSuggestions:     v.NextSuggestions != nil && *v.NextSuggestions}
 	if d, ok := s.device(ctx, v.MachineID); ok {
 		out.Cwd = s.spaceCwd(d, sp)
 		var list []proto.Session
