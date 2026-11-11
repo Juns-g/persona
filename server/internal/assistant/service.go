@@ -152,7 +152,6 @@ type Service struct {
 	tposts     threadPoster      // feishu_thread_posts.go: what a todo tells its chat thread
 	tevents    todoEvents        // todo_events.go: what the extensions are told of the todos
 	directions directionBook     // directions.go: the leaders' records and what the extensions were told of them
-	leaderTold leaderBroadcast   // direction_counts.go: the leaders the clients were last told (assistant_leaders)
 	lreports   leaderReportBook  // leader_reports.go: what the leaders' tasks were reported as
 	dtree      directionTreeBook // direction_tree.go: the direction tree the apps were last told of
 	offers     routeBook         // route.go: the directions offered for New chats

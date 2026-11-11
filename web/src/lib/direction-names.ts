@@ -3,13 +3,33 @@
 // leaders' ids (`assistant.leaders`); the names come from `GET /api/v1/assistant/leaders` (#3519, #3695), which the hub
 // works out (the name given, else the project's, else the title without its "MMDD | kind | " prefix).
 // Asked again whenever the leaders or their titles change; until it answers, or on a hub that cannot, a row shows its title.
-// Each current leader also has its open tasks' counts (`counts`: Working and Waiting on you, #4331); the hub sends the
-// whole list again as `assistant_leaders` whenever the leaders, their names or their counts change (applyLeadersEvent),
-// so an open sidebar follows a leader made or ended anywhere at once.
+// Names and counts come from the hub's direction tree (GET /api/v1/assistant/directions/tree, #4352): each current
+// direction in the leaders' order with its name and `counts` (Working and Waiting on you are shown, #4331). The hub sends
+// `directions` whenever the tree changes (a leader made or ended anywhere, a name, a task's state), and the page reads
+// the tree again then (readDirectionTree), so an open sidebar follows at once. A hub without the tree answers 404: the
+// names come from GET /api/v1/assistant/leaders and there are no counts.
 import { useEffect, useSyncExternalStore } from "react";
 import { api } from "./api";
 
 export const LEADERS_PATH = "/assistant/leaders";
+export const TREE_PATH = "/assistant/directions/tree";
+
+/** A direction as the tree lists it (only what the sidebar reads). */
+interface TreeDirection {
+  id: string;
+  name?: string;
+  secretary?: boolean;
+  counts?: Partial<LeaderCounts>;
+}
+
+/** The tree's directions as leaders: the secretary group left out. */
+export function treeLeaders(tree: { directions?: TreeDirection[] } | undefined): LeaderInfo[] {
+  return (tree?.directions ?? []).filter((d) => d.id && !d.secretary).map((d) => ({ id: d.id, name: d.name, counts: { working: d.counts?.working ?? 0, needs_you: d.counts?.needs_you ?? 0 } }));
+}
+
+/** The tree, or a rejection when the answer is none (an older hub's 404, a layer in front of it): a tree always lists
+ *  its secretary group. */
+const fetchTree = () => api<{ directions?: TreeDirection[] }>(TREE_PATH).then((t) => (Array.isArray(t?.directions) ? t : Promise.reject(new Error("no direction tree"))));
 
 export interface LeaderInfo {
   id: string;
@@ -81,8 +101,8 @@ function set(list: readonly LeaderInfo[] | undefined) {
   listeners.forEach((l) => l());
 }
 
-/** The hub's `assistant_leaders` (the current leaders with their names and counts): taken at once, and remembered as
- *  asked for, so the next render does not ask again. Returns the leaders' ids in order. */
+/** The current leaders with their names and counts, as the tree had them: taken at once, and remembered as asked for,
+ *  so the next render does not ask again. Returns the leaders' ids in order. */
 export function applyLeadersEvent(list: readonly LeaderInfo[] | undefined): string[] {
   asked++;
   set(list);
@@ -91,8 +111,8 @@ export function applyLeadersEvent(list: readonly LeaderInfo[] | undefined): stri
   return ids;
 }
 
-/** The leaders the hub's last `assistant_leaders` named: while the page shows those, the event keeps their names and
- *  counts current (it comes again on any change), so nothing is asked for. */
+/** The leaders the last tree named: while the page shows those, `directions` keeps their names and counts current (it
+ *  comes again on any change), so nothing is asked for. */
 let toldIds: string | null = null;
 const idsOf = (key: string) => key.split("\u0001").map((k) => k.split("\u0000")[0]).filter(Boolean).join("\u0001");
 
@@ -103,8 +123,10 @@ function ask(key: string) {
   if (toldIds !== null && idsOf(key) === toldIds) return;
   const n = ++asked;
   if (!key) return set([]);
-  api<{ leaders?: LeaderInfo[] }>(LEADERS_PATH).then(
-    (res) => n === asked && set(res.leaders),
+  fetchTree()
+    .then(treeLeaders, () => api<{ leaders?: LeaderInfo[] }>(LEADERS_PATH).then((res) => res.leaders ?? [])) // an older hub: names only
+    .then(
+    (res) => n === asked && set(res),
     // an older hub or a failed read: the rows keep their titles; the next change asks again
     () => n === asked && (askedFor = ""),
   );
@@ -137,4 +159,14 @@ const countsSnapshot = () => counts;
 /** The current leaders' counts (read with useDirectionNames, which asks for them). */
 export function useLeaderCounts(): ReadonlyMap<string, LeaderCounts> {
   return useSyncExternalStore(subscribe, countsSnapshot, countsSnapshot);
+}
+
+/** Reads the tree (on `directions` and on every hello): the leaders' ids in order, or null when it could not be read
+ *  (an older hub, a failure), in which case nothing changes. */
+export async function readDirectionTree(): Promise<string[] | null> {
+  try {
+    return applyLeadersEvent(treeLeaders(await fetchTree()));
+  } catch {
+    return null;
+  }
 }

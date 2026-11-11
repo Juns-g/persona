@@ -29,7 +29,7 @@ import { dropElicitationDraft } from "./elicitation";
 import type { OutboxEntry } from "./outbox";
 import { NO_LINK, RESTARTING_MS, type ConnLink } from "./connection";
 import { setOfflineProbe } from "./feedback";
-import { applyLeadersEvent, type LeaderInfo } from "./direction-names";
+import { readDirectionTree } from "./direction-names";
 import { afterEvent, afterHello, graceUntil, isResumed, NO_CURSOR, RESTART_FAST_MS, retryDelay, shownConn, wsQuery, type Drop, type EventCursor } from "./reconnect";
 
 export type Conn = "connecting" | "online" | "offline";
@@ -679,6 +679,17 @@ if (typeof window !== "undefined") {
   window.addEventListener("offline", () => set({ link: { ...state.link, networkUp: false } }));
 }
 
+/** The tree read again: its leaders become the assistant's (a new one not listed yet: the assistant is read again). */
+async function followDirections() {
+  if (pageOf() !== "") return; // the tree is the default assistant's (docs/protocol/protocol.md)
+  const ids = await readDirectionTree();
+  const a = state.assistant;
+  if (!ids || !a) return;
+  const known = new Set(a.conversations.map((c) => c.session_id));
+  if (ids.some((id) => !known.has(id))) void refreshAssistant().catch(() => {});
+  else if (JSON.stringify(ids) !== JSON.stringify((a.leaders ?? []).filter((id) => id !== a.main))) set({ assistant: { ...a, leaders: ids } });
+}
+
 const helloHooks = new Set<() => void>();
 /** Runs `f` on every hello (lib/new-version.ts asks for the shell then); loaded after the first screen, so it is not in it. */
 export function onHello(f: () => void): () => void {
@@ -694,6 +705,7 @@ function onMessage(msg: Record<string, unknown>) {
   switch (msg.type) {
     case "hello": {
       helloHooks.forEach((f) => f()); // e.g. a hub that came back may serve a new web build (lib/new-version.ts)
+      void followDirections(); // missed while away: the tree again (the hub's rule: on every (re)connect)
       setCompatibilityFeatures(Array.isArray(msg.features) ? msg.features as string[] : []);
       const mesh = (msg.mesh as { hubs?: MeshHub[] } | undefined)?.hubs;
       set({
@@ -723,17 +735,11 @@ function onMessage(msg: Record<string, unknown>) {
       }
       break;
     }
-    case "assistant_leaders": {
-      // the current leaders with their names and counts (#4331): the sidebar follows a leader made or ended anywhere at
-      // once; a new one may be a conversation this page has not listed yet, so the assistant is read again then
-      const a = state.assistant as (AssistantInfo & { manager?: string }) | null;
-      if (!a || (typeof msg.manager === "string" && a.manager && msg.manager !== a.manager)) break;
-      const ids = applyLeadersEvent(Array.isArray(msg.leaders) ? (msg.leaders as LeaderInfo[]) : []);
-      const known = new Set(a.conversations.map((c) => c.session_id));
-      if (ids.some((id) => !known.has(id))) void refreshAssistant().catch(() => {});
-      else if (JSON.stringify(ids) !== JSON.stringify((a.leaders ?? []).filter((id) => id !== a.main))) set({ assistant: { ...a, leaders: ids } });
+    case "directions":
+      // the direction tree changed (#4352): a leader made or ended anywhere, a name, a task's state. The sidebar's 常驻
+      // follow at once (#4331: a sixth leader stayed hidden until a reload)
+      void followDirections();
       break;
-    }
     case "hub_restarting":
       restartNotice = true; // the close that follows is a restart: retry at once, stay quiet longer
       break;

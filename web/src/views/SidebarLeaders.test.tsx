@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 // The leader conversations in the sidebar (#3623, #4331): Persona chats are the main one (its row above) and the hub's
-// `assistant.leaders` only, "常驻", in the hub's order under each one's name (GET /api/v1/assistant/leaders) with what it
-// has Working and Waiting on you; every other chat is under 全部对话. The hub's `assistant_leaders` updates an open
-// sidebar at once (a leader made or ended anywhere).
+// `assistant.leaders` only, "常驻", in the hub's order under each one's name with what it has Working and Waiting on you
+// (the direction tree, GET /api/v1/assistant/directions/tree, #4352); every other chat is under 全部对话. The hub's
+// `directions` message makes an open sidebar read the tree again (a leader made or ended anywhere).
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -57,7 +57,11 @@ beforeEach(() => {
       posts.push(path);
       return Promise.resolve(new Response(String(init.body), { headers: { "Content-Type": "application/json" } }));
     }
-    if (path === "/api/v1/assistant/leaders" && named === undefined) return Promise.resolve(new Response("{}", { status: 404 }));
+    if ((path === "/api/v1/assistant/leaders" || path === "/api/v1/assistant/directions/tree") && named === undefined) return Promise.resolve(new Response("{}", { status: 404 }));
+    if (path === "/api/v1/assistant/directions/tree") {
+      const list = (named as { leaders: { id: string; name?: string; ended?: boolean; counts?: unknown }[] }).leaders.filter((l) => !l.ended);
+      return Promise.resolve(new Response(JSON.stringify({ directions: [...list.map((l) => ({ id: l.id, name: l.name, counts: { stuck: 0, review: 0, ...(l.counts as object) }, tasks: [] })), { id: "main", name: "", secretary: true, counts: { working: 9, needs_you: 9, stuck: 0, review: 0 }, tasks: [] }] }), { headers: { "Content-Type": "application/json" } }));
+    }
     const body = path === "/api/v1/assistant" ? { machine_id: "hub", main: "main", leaders, conversations } : path === "/api/v1/assistant/leaders" ? named : path === "/api/v1/machines" ? { machines: [{ id: "hub", name: "Hub", online: true }] } : {};
     return Promise.resolve(new Response(JSON.stringify(body), { headers: { "Content-Type": "application/json" } }));
   }));
@@ -143,7 +147,7 @@ describe("the leader conversations in the sidebar", () => {
     expect(posts).toEqual(["/api/v1/assistant/directions/lead-a/end"]);
   });
 
-  it("follow the hub's assistant_leaders at once: a new one shows, an ended one goes, counts change", async () => {
+  it("follow the hub's directions message at once: a new one shows, an ended one goes, counts change", async () => {
     vi.stubGlobal("WebSocket", FakeSocket);
     act(() => {
       connect();
@@ -153,18 +157,22 @@ describe("the leader conversations in the sidebar", () => {
     push({ type: "hello", features: [] });
     await renderSidebar();
     expect(rowIds()).toEqual(["lead-a", "lead-b"]);
-    // the secretary made "mine" a lead: no reload, no reconnect
-    push({ type: "assistant_leaders", manager: "assistant", leaders: [
+    // the secretary made "mine" a lead: the tree has it; no reload, no reconnect
+    named = { leaders: [
       { id: "lead-a", name: "Product", counts: { working: 0, needs_you: 3 } },
       { id: "lead-b", name: "Infrastructure", counts: { working: 0, needs_you: 0 } },
       { id: "mine", name: "Docs sync", counts: { working: 1, needs_you: 0 } },
-    ] });
+    ] };
+    push({ type: "directions" });
     await flush();
     expect(rowIds()).toEqual(["lead-a", "lead-b", "mine"]);
     expect(row("mine").textContent).toContain("Docs sync");
     expect(row("mine").textContent).toContain("在做 1");
     expect(row("lead-a").textContent).toContain("等你 3");
-    push({ type: "assistant_leaders", manager: "assistant", leaders: [{ id: "mine", name: "Docs sync", counts: { working: 1, needs_you: 0 } }] });
+    // the secretary group's counts are never a lead's
+    expect(host.querySelector("[data-sidebar-rows]")!.textContent).not.toContain("在做 9");
+    named = { leaders: [{ id: "mine", name: "Docs sync", counts: { working: 1, needs_you: 0 } }] };
+    push({ type: "directions" });
     await flush();
     expect(rowIds()).toEqual(["mine"]);
   });

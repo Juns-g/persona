@@ -75,7 +75,7 @@ async function open(browser, theme, width, pins) {
 }
 
 const browser = await chromium.launch(executable ? { executablePath: executable } : { channel: "chrome" });
-const counted = new Map(((await hub("/assistant/leaders")).leaders ?? []).map((l) => [l.id, l.counts]));
+const counted = new Map(((await hub("/assistant/directions/tree")).directions ?? []).filter((d) => !d.secretary).map((d) => [d.id, d.counts]));
 const label = (c) => [c?.working ? `在做 ${c.working}` : "", c?.needs_you ? `等你 ${c.needs_you}` : ""].filter(Boolean).join(" · ");
 try {
   for (const theme of ["light", "dark"]) {
