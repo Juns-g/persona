@@ -3,8 +3,10 @@ import XCTest
 /// A terminal question of several (#2970): Previous and Next press ← and →, a question gone back to shows the answer it
 /// had, and the answers are reviewed before they go. Against scripts/mock/mock_hub.py started with MOCK_SCREEN_STEPS=1,
 /// whose dialog moves as the terminal does (TEST_RUNNER_PERSONA_STEPS_HUB=http://127.0.0.1:<port>;
-/// TEST_RUNNER_PERSONA_SHOTS=<dir> keeps the screenshots); both styles (TEST_RUNNER_PERSONA_UI_STYLE=beautiful).
-final class ScreenStepsCardTests: XCTestCase {
+/// TEST_RUNNER_PERSONA_SHOTS=<dir> keeps the screenshots). ScreenStepsCardBeautifulTests below runs it all in BeautifulUI.
+class ScreenStepsCardTests: XCTestCase {
+    /// The style the card is drawn in.
+    var style: String { UITestStyle.name }
     private let review = "a1f3c2d4-0000-4000-8000-000000000006"
     private var hub = ""
 
@@ -118,7 +120,8 @@ final class ScreenStepsCardTests: XCTestCase {
         let pair = "persona://pair?url=" + hub.addingPercentEncoding(withAllowedCharacters: .alphanumerics)! + "&token=mock"
         app.launchArguments = ["-pairURL", pair, "-openSession", "macbook/" + review, "-ui.scheme", scheme]
         if let size { app.launchArguments += ["-UIPreferredContentSizeCategoryName", size] }
-        app.launchPinned()
+        app.launchArguments += ["-ui.style", style]
+        app.launchPersona()
         dismissAlerts()
         return app
     }
@@ -174,11 +177,11 @@ final class ScreenStepsCardTests: XCTestCase {
     @MainActor private func shot(_ app: XCUIApplication, _ name: String) {
         dismissAlerts()
         let a = XCTAttachment(screenshot: app.screenshot())
-        a.name = name
+        a.name = "\(style)-\(name)"
         a.lifetime = .keepAlways
         add(a)
         if let dir = ProcessInfo.processInfo.environment["PERSONA_SHOTS"] {
-            try? app.screenshot().pngRepresentation.write(to: URL(fileURLWithPath: "\(dir)/steps-\(name).png"))
+            try? app.screenshot().pngRepresentation.write(to: URL(fileURLWithPath: "\(dir)/steps-\(style)-\(name).png"))
         }
     }
 
@@ -190,4 +193,10 @@ final class ScreenStepsCardTests: XCTestCase {
         }
         return false
     }
+}
+
+/// The same in BeautifulUI, whose card differs (its own Next on a question gone back to, no step capsules), so a run in
+/// the default style covers both.
+final class ScreenStepsCardBeautifulTests: ScreenStepsCardTests {
+    override var style: String { "beautiful" }
 }
