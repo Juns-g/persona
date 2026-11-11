@@ -12,7 +12,7 @@ Why it exists, the trade-offs against other approaches (URL scheme, re-reading l
 
 ```sh
 export PERSONACTL_UDID=<simulator udid>            # unset means booted
-export PERSONACTL_PORT=<port>                      # optional: the App's port (default 18950), when another simulator's App may use it
+export PERSONACTL_PORT=<port>                      # optional: the App's port (default 18950), one nothing else on the Mac uses (a mock hub on it keeps the App out: simulators share the Mac's loopback)
 scripts/app/personactl.py launch --hub http://127.0.0.1:18760   # kill and relaunch the App (with a one-time token), wait for it to answer
 scripts/app/personactl.py state                      # current tab, open session, style, theme color, light/dark, connection state
 scripts/app/personactl.py online                     # wait for the hub's live connection (reconnects once if not connected within 2 s)

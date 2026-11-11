@@ -65,6 +65,16 @@ STATE_DIR = os.path.expanduser("~/.cache/personactl")
 DEFAULT_PORT = 18950
 
 
+def port_taken(port):
+    """Whether something on the Mac holds 127.0.0.1:`port` (the app's own listener included)."""
+    with socket.socket() as s:
+        try:
+            s.bind(("127.0.0.1", port))
+        except OSError:
+            return True
+    return False
+
+
 class CtlError(Exception):
     pass
 
@@ -186,7 +196,11 @@ class Ctl:
                 return self.call("ping", _timeout=2)
             except (OSError, CtlError, ValueError):
                 if time.time() > deadline:
-                    raise CtlError("the app did not answer (a DEBUG build? the port taken?)")
+                    if port_taken(self.port):
+                        # the simulator shares the Mac's loopback: a mock hub on this port keeps the app's listener out
+                        raise CtlError("the app did not answer: something else listens on port %d (set PERSONACTL_PORT "
+                                       "to a port nothing else uses), or the app hangs" % self.port)
+                    raise CtlError("the app did not answer (a DEBUG build? did it crash?)")
                 time.sleep(0.2)
 
     def idle(self, quiet=0.8, timeout=10):
