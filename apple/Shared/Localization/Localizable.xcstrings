@@ -1,6 +1,29 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "All Chats and Agents": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "All Chats and Agents"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "すべてのチャットとエージェント"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "全部对话和 Agent"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
     "Background workflow": {
       "extractionState": "manual",
       "localizations": {
@@ -45935,6 +45958,52 @@
         "zh-Hans": { "stringUnit": { "state": "translated", "value": "无法恢复草稿：%@" } }
       }
     },
+    "Search Chats and Agents": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Search Chats and Agents"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "チャットとエージェントを検索"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "搜索对话和 Agent"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "Send To [Share Sheet]": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Send To"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "送信先"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "发送到"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
     "Task updates aren't fully loaded. Refresh to continue.": {
       "extractionState": "manual",
       "localizations": {
@@ -55301,29 +55370,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "健康对话里记下的目标、过敏、用药等，单独存放，不会流到其他对话；可以随时查看和删除。"
-          }
-        }
-      },
-      "extractionState": "manual"
-    },
-    "Goes to Persona's main conversation": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "发到 Persona 主对话"
-          }
-        },
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Goes to Persona's main conversation"
-          }
-        },
-        "ja": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Persona のメイン会話に送ります"
           }
         }
       },
@@ -78687,29 +78733,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "还没有机器"
-          }
-        }
-      },
-      "extractionState": "manual"
-    },
-    "No main conversation yet: send something in Persona first": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "还没有主对话：先在 Persona 里发一句"
-          }
-        },
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "No main conversation yet: send something in Persona first"
-          }
-        },
-        "ja": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "メイン会話がまだありません。先に Persona で何か送ってください"
           }
         }
       },
