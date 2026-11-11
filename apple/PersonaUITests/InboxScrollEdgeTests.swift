@@ -3,15 +3,16 @@ import XCTest
 /// The inbox's rows stay sharp while it scrolls (#4218). On an iPhone, once the list scrolled far enough for a title to
 /// stick under the navigation bar, the scroll edge blur reached from the top down to Done's title (then the header of a
 /// section with nothing in it, with the Jump To menu) and covered every row between, blurred and washed toward the page
-/// color, until the list was back at its top. The simulator drew the edge right even then, so this keeps the layout that
-/// showed it under watch: by time, one manager, a title stuck at the top and Done's title with Jump To on screen, moved by
-/// a finger (let go after a slow drag, settled, flicked to the end and pulled past it, back at the top), in every style,
-/// light and dark (`TEST_RUNNER_PERSONA_UI_STYLE` keeps a run to one style).
+/// color, until the list was back at its top. The simulator never blurred the rows, but washed that title out like a stuck
+/// one's; this watches both in the layout that showed it: by time, one manager, a title stuck at the top and Done's title
+/// with Jump To on screen, moved by a finger (let go after a slow drag, settled, flicked to the end and pulled past it,
+/// back at the top), in every style, light and dark (`TEST_RUNNER_PERSONA_UI_STYLE` keeps a run to one style).
 ///
-/// Measured on the screenshot: the spread of luminance (0…1) over each row's title on screen (the open items' and the
-/// waiting sessions') between the stuck title's edge and the search bar's (1.0 for a sharp title; 0.07 to 0.08 in the
-/// iPhone's recording of the blur). Against scripts/mock/mock_hub.py with MOCK_MANAGERS=0 (PERSONA_MOCK_HUB).
-/// TEST_RUNNER_PERSONA_SHOTS=<dir> keeps each step's screenshot.
+/// Measured on the screenshot as the spread of luminance (0…1) over a title: each row's title on screen (the open items'
+/// and the waiting sessions') between the stuck title's edge and the search bar's (1.0 for a sharp title; 0.07 to 0.08 in
+/// the iPhone's recording of the blur), and Done's title at the end (0.23 to 0.28 washed as a header, against 0.46 to
+/// 0.56 for Collapsed's title in the same style; 0.46 to 0.50 as a row). Against scripts/mock/mock_hub.py with
+/// MOCK_MANAGERS=0 (PERSONA_MOCK_HUB). TEST_RUNNER_PERSONA_SHOTS=<dir> keeps each step's screenshot.
 final class InboxScrollEdgeTests: XCTestCase {
     private var app: XCUIApplication!
     private var pair = ""
@@ -21,6 +22,8 @@ final class InboxScrollEdgeTests: XCTestCase {
     /// Above the search bar: the bottom edge's fade.
     private static let bottomEdge: CGFloat = 48
     private static let sharp = 0.3
+    /// A secondary title's spread: about 0.46 to 0.56 on every style's page, half that washed out.
+    private static let unwashed = 0.38
     private static let agentRow = "inbox.agentRow"
     private static let styles = ["glass", "clay", "island", "lark", "beautiful"]
 
@@ -102,6 +105,7 @@ final class InboxScrollEdgeTests: XCTestCase {
         XCTAssertTrue(app.buttons["inbox.jumpTo"].firstMatch.waitForExistence(timeout: 5),
                       "Done does not list its groups (no Jump To, \(run)):\n\(app.debugDescription)")
         assertSharp("at the end", run, titles)
+        assertDoneTitle("at the end", run)
 
         // Pulled past the end and let go (the iPhone's list bounced there).
         window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.7))
@@ -110,6 +114,7 @@ final class InboxScrollEdgeTests: XCTestCase {
         assertSharp("bouncing at the end", run, titles)
         sleep(1)
         assertSharp("after the bounce", run, titles)
+        assertDoneTitle("after the bounce", run)
 
         for _ in 0..<4 { app.swipeDown(velocity: .fast) }
         sleep(2)
@@ -134,6 +139,31 @@ final class InboxScrollEdgeTests: XCTestCase {
             print("INBOX-EDGE \(run) \(step) y=\(Int(f.minY)): \(String(format: "%.3f", spread))")
             XCTAssertGreaterThan(spread, Self.sharp, "an inbox row is blurred \(step) (\(run), title at y=\(Int(f.minY)))")
         }
+    }
+
+    /// Done's title (the text left of Jump To) has a plain secondary title's contrast, not a stuck title's washed one.
+    @MainActor private func assertDoneTitle(_ step: String, _ run: String) {
+        let shot = app.windows.firstMatch.screenshot()
+        guard let image = shot.image.cgImage, let root = try? app.windows.firstMatch.snapshot() else {
+            return XCTFail("no screenshot (\(step), \(run))")
+        }
+        var jump: CGRect?, texts: [CGRect] = []
+        func walk(_ e: XCUIElementSnapshot) {
+            if e.identifier == "inbox.jumpTo", jump == nil { jump = e.frame; return }
+            if e.elementType == .staticText { texts.append(e.frame) }
+            e.children.forEach(walk)
+        }
+        walk(root)
+        guard let jump else { return XCTFail("no Jump To \(step) (\(run))") }
+        guard let title = texts.first(where: { $0.maxX < jump.minX && $0.midY > jump.minY && $0.midY < jump.maxY }) else {
+            return XCTFail("no Done title beside Jump To \(step) (\(run))")
+        }
+        let window = app.windows.firstMatch.frame
+        let scale = CGFloat(image.width) / window.width
+        let r = title.offsetBy(dx: -window.minX, dy: -window.minY)
+        let spread = Self.spread(image, CGRect(x: r.minX * scale, y: r.minY * scale, width: r.width * scale, height: r.height * scale))
+        print("INBOX-EDGE \(run) \(step) done title y=\(Int(title.minY)): \(String(format: "%.3f", spread))")
+        XCTAssertGreaterThan(spread, Self.unwashed, "Done's title is washed out \(step) (\(run), y=\(Int(title.minY)))")
     }
 
     /// The frames of the row titles on screen, from one snapshot: the open items' (by their titles) and the waiting

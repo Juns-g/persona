@@ -564,7 +564,7 @@ struct InboxPage: View {
                         let header = sectionHeader(tier.title, count: items.count + agents.count, key: tier.rawValue, manager: manager,
                                                    clear: picked == nil ? InboxPage.clearTitle(tier).map { ($0, { store.setDone(items, true) }) } : nil)
                         if titled(tier, groups: groups, agents: agents.count) {
-                            Section { titleRow(header) }
+                            Section { EmptyView() } header: { header }
                             if folds.isOpen(tier.rawValue, manager: manager) {
                                 if !agents.isEmpty {
                                     let g = InboxGroups.Group(key: "agents", title: String(localized: "Agents Waiting on You"), items: [])
@@ -599,7 +599,16 @@ struct InboxPage: View {
                     let count = more ? "\(doneCount)+" : "\(doneCount)"
                     let filtered = !source.isEmpty || !kind.isEmpty || !query.isEmpty
                     if dg.count > 1 {
-                        Section { titleRow(doneHeader(count: count, groups: dg, manager: manager, proxy: proxy)) }
+                        // Its title as a row, not as the header of a section with nothing in it: as that header (with its
+                        // Jump To menu, #2979) its text came out washed like a stuck title's wherever it was, and on an
+                        // iPhone the scroll edge reached from the top down to it, over every row between (#4218).
+                        Section {
+                            doneHeader(count: count, groups: dg, manager: manager, proxy: proxy)
+                                .listRowInsets(.vertical, Theme.Space.s)
+                                .listRowSeparator(.hidden)
+                                .listRowBackground(Color.clear)
+                                .accessibilityAddTraits(.isHeader)
+                        }
                         if folds.isOpen("done", manager: manager) {
                             ForEach(dg) { g in
                                 Section {
@@ -705,18 +714,6 @@ struct InboxPage: View {
             guard let first else { return }
             withAnimation(Theme.Motion.standard) { proxy.scrollTo(first, anchor: .top) }
         }
-    }
-
-    /// A title with no rows of its own under it (a tier whose groups have titles, Done listing its groups with Jump To) as
-    /// a row, not as the header of an empty section: such a title never stuck anyway. As a header (Done's, with its Jump To
-    /// menu, #2979) the iPhone counted it with a stuck title above and drew the scroll edge blur from the top down to it,
-    /// over every row between (#4218). The row's minimum height leaves it 2 pt taller than that header.
-    private func titleRow(_ title: some View) -> some View {
-        title
-            .listRowInsets(.vertical, Theme.Space.s)
-            .listRowSeparator(.hidden)
-            .listRowBackground(Color.clear)
-            .accessibilityAddTraits(.isHeader)
     }
 
     /// A section title that opens / closes the section, with an optional action on the right (List headers take no
