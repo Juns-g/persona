@@ -152,18 +152,15 @@ final class MessageLiftUITests: XCTestCase {
         return bar
     }
 
-    /// Scrolls the chat back (slowly, no fling) until the message with these words starts below the top bar, so a press
-    /// lands on it: the message before the newest answer is mostly above the screen.
+    /// Scrolls the chat back until the message with these words starts below the top bar, so a press lands on it: the
+    /// message before the newest answer is mostly above the screen. Flicks, not slow drags: a drag held on a message
+    /// first was often taken by it and the chat stayed put (4 drags, no move, in half the Agents cases). The words are
+    /// the chat's first message, so a flick past them only reaches its top.
     @MainActor private func reveal(_ words: String) {
-        let window = app.windows.firstMatch.frame, clear = window.height * 0.2
-        let origin = app.coordinate(withNormalizedOffset: .zero)
+        let clear = app.windows.firstMatch.frame.height * 0.2
         for _ in 0..<4 {
-            let f = text(words).frame
-            guard f.minY < clear else { return }
-            let by = min(clear - f.minY + 8, window.height * 0.45), from = window.height * 0.3
-            origin.withOffset(CGVector(dx: window.midX, dy: from))
-                .press(forDuration: 0.1, thenDragTo: origin.withOffset(CGVector(dx: window.midX, dy: from + by)),
-                       withVelocity: .slow, thenHoldForDuration: 0.5)
+            guard text(words).frame.minY < clear else { return }
+            app.swipeDown(velocity: .fast)
             sleep(1)
         }
     }
