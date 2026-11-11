@@ -137,6 +137,16 @@ from colliding with its buttons.
   the same: fonts, list markers, block spacing and wrapping all moved. The chat's words stay, and the text view lies over them with its
   text, links and pictures clear, for the highlight and handles only, wrapping at the width the words were offered. Its layout still has to
   match for the highlight to land on the right words; `-showLiftLines` writes each line's position in the three states for the UI tests.
+- **A view drawn again starts with fresh `@State`.** The lifted copy is a new instance: a quote the user opened in the chat came back
+  folded, and on its first frame (no height measured yet) unfolded, then folded. What must look the same in both lives outside the view,
+  keyed by the message (`RowMemo.key`, ids repeat across chats) and the block (`QuoteFold`, `replyKey`); a measured value there is
+  `@ObservationIgnored` (every row writes it) while the view keeps its own `@State` copy to redraw itself. MarkdownUI tells a block nothing
+  of where it is in its message, so two blocks with the same words share their state.
+- **Laid out is not shown.** A folded quote clips its words, but `Text.LayoutKey` still reports every line, so its hidden lines sat among
+  the chat's rows next to the paragraph after it. The folded card reports its bounds (`FoldedQuotes`); `readingShownWords` resolves them
+  and the text layouts into one value (`ShownWords`) in backgrounds and reads it in an overlay, since one `overlayPreferenceValue` reads one
+  key. Likewise a code block's title bar is no line of the message (`oneBlockInLift`), and its code's first line takes the chat's next row
+  wherever the bar put it.
 - A `UIScrollView` subclass cannot have a property named `dragging`: its Objective-C getter is `isDragging`'s, and the override fails.
   `Layout` methods are not on the main actor: what they write must be `nonisolated`.
 - **UIKit only scrolls a text view's own content while a selection handle is held at its edge.** With `isScrollEnabled = false` inside a

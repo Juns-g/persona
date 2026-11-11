@@ -41,6 +41,8 @@ nonisolated enum ReplyMetrics {
     static let codeBottom: CGFloat = 12
     /// Between a code block's lines, em of its own size.
     static let codeLineSpacing: CGFloat = 0.2
+    /// A code block's title bar over its code (`ReplyCodeBlock`): Copy's touch height, drawn past the bar's edges.
+    static let codeBar: CGFloat = Theme.Size.tapTarget - 2 * Theme.Space.sm
     /// Inline code, and an agent's words between its steps (`QuietMarkdown`), em.
     static let inlineCode: CGFloat = 0.88
     static let quiet: CGFloat = 0.88
@@ -78,6 +80,8 @@ private struct SelectableInLift: ViewModifier {
     @Environment(\.liftSelect) private var select
     @Environment(\.liftCopy) private var lifted
     @Environment(MessageMenu.self) private var menu: MessageMenu?
+    @Environment(AppModel.self) private var model: AppModel?
+    @Environment(\.fileScope) private var scope
     var text: String
     var words: LiftWords
     /// The width the words were offered, which they wrap at (they may take less): the text view wraps there too.
@@ -89,11 +93,12 @@ private struct SelectableInLift: ViewModifier {
             RecordsOffer(place: place) {
                 content.accessibilityHidden(select != nil) // the text view's words, while it is over them
             }
-            // The text view over them, its lines on theirs (`LiftLayout.snap`).
-            .overlayPreferenceValue(Text.LayoutKey.self) { layouts in
+            // The text view over them, its lines on theirs (`LiftLayout.snap`), a folded quote's hidden ones aside.
+            .readingShownWords { shown in
                 if let select, let menu {
                     GeometryReader { geo in
-                        LiftTextView(text: text, words: words, select: select, menu: menu, place: place, rows: Self.rows(layouts, geo))
+                        LiftTextView(text: source, words: words, select: select, menu: menu, place: place,
+                                     rows: shown.rows, folds: shown.foldSpans)
                             .frame(width: geo.size.width, height: geo.size.height)
                     }
                 }
@@ -106,18 +111,18 @@ private struct SelectableInLift: ViewModifier {
         #endif
     }
 
-    /// The baselines of the words' lines, in their coordinates, one a row (a numbered item's marker and its words share one).
-    private static func rows(_ layouts: Text.LayoutKey.Value, _ geo: GeometryProxy) -> [CGFloat] {
-        var all: [CGFloat] = []
-        for a in layouts {
-            let p = geo[a.origin]
-            for line in a.layout where line.reduce(0, { $0 + $1.count }) > 0 {
-                all.append(p.y + line.typographicBounds.origin.y)
-            }
-        }
-        var rows: [CGFloat] = []
-        for b in all.sorted() where rows.last.map({ b - $0 > 0.5 }) ?? true { rows.append(b) }
-        return rows
+    /// The words as the chat draws them: a reply's paths that are there, written as code, are linked as words in the
+    /// body's font, not as code (`LinkedMarkdown.linkable`, `PathMarkdown.linked(plainCode:)`), and so laid out here.
+    private var source: String {
+        #if os(iOS)
+        guard case .reply = words, let scope else { return text }
+        let paths = PathMarkdown(text)
+        let there = LinkedMarkdown.linkable(paths, model: model, scope: scope)
+        guard !there.isEmpty else { return text }
+        return paths.linked(plainCode: true) { there.contains($0) }.markdown
+        #else
+        return text
+        #endif
     }
 }
 
@@ -193,8 +198,10 @@ private struct LiftTextView: UIViewRepresentable {
     var select: InPlaceSelect
     var menu: MessageMenu
     var place: LiftPlace
-    /// The chat's lines (`SelectableInLift.rows`).
+    /// The chat's lines (`ShownWords.rows`).
     var rows: [CGFloat]
+    /// Its folded quotes' cards (`ShownWords.foldSpans`).
+    var folds: [ClosedRange<CGFloat>]
 
     func makeUIView(context: Context) -> LiftUITextView { LiftUITextView() }
 
@@ -202,7 +209,7 @@ private struct LiftTextView: UIViewRepresentable {
         let menu = menu
         v.place = place
         v.show(text, words, design: UIFontDescriptor.SystemDesign(StyleSpec.current.fontDesign)) // the app's, as RootView sets it
-        v.snap(to: rows)
+        v.snap(to: rows, folds: folds)
         if let bar = menu.lift?.bar,
            let quote = menu.selectionQuote(of: SelectableText(text: bar.text, plain: bar.isUser, msg: bar.id, quotable: !bar.pending)) {
             v.quote = { picked in
@@ -246,6 +253,8 @@ final class LiftUITextView: UITextView, UITextViewDelegate, UIEditMenuInteractio
     private var design = UIFontDescriptor.SystemDesign.default
     /// Its lines on the chat's (`LiftLayout.snap`): the chat's baselines, and the delegate that puts each line there.
     private var rows: [CGFloat] = []
+    /// Its folded quotes' cards: their lines past the fold are hidden (`LiftLayout.snap`).
+    private var folds: [ClosedRange<CGFloat>] = []
     private let snapper = LineSnap()
     /// The menu shown over the words a press picked. The text view's own menu only comes up on its own gestures, and
     /// its interaction is not among `interactions`; this one shows the same items.
@@ -317,10 +326,14 @@ final class LiftUITextView: UITextView, UITextViewDelegate, UIEditMenuInteractio
         #endif
     }
 
-    /// The chat's lines, for this view's to go on.
-    func snap(to rows: [CGFloat]) {
-        guard rows.count != self.rows.count || zip(rows, self.rows).contains(where: { abs($0 - $1) > 0.25 }) else { return }
+    /// The chat's lines, for this view's to go on, and its folded quotes' cards.
+    func snap(to rows: [CGFloat], folds: [ClosedRange<CGFloat>] = []) {
+        let same = rows.count == self.rows.count && !zip(rows, self.rows).contains(where: { abs($0 - $1) > 0.25 })
+            && folds.count == self.folds.count
+            && !zip(folds, self.folds).contains(where: { abs($0.lowerBound - $1.lowerBound) > 0.25 || abs($0.upperBound - $1.upperBound) > 0.25 })
+        guard !same else { return }
         self.rows = rows
+        self.folds = folds
         resnap()
     }
 
@@ -328,20 +341,30 @@ final class LiftUITextView: UITextView, UITextViewDelegate, UIEditMenuInteractio
     private func resnap() {
         let all = NSRange(location: 0, length: storage.length)
         snapper.targets = [:]
+        snapper.hidden = []
         layout.invalidateLayout(forCharacterRange: all, actualCharacterRange: nil)
         guard !rows.isEmpty, storage.length > 0 else { return }
         layout.ensureLayout(for: textContainer)
         let text = storage.string as NSString
         var starts: [Int] = []
-        var lines: [(baseline: CGFloat, block: Bool)] = []
+        var lines: [LiftLayout.SnapLine] = []
+        var codes: Set<Int> = []
         layout.enumerateLineFragments(forGlyphRange: layout.glyphRange(for: textContainer)) { rect, _, _, range, _ in
-            let s = text.substring(with: self.layout.characterRange(forGlyphRange: range, actualGlyphRange: nil))
+            let chars = self.layout.characterRange(forGlyphRange: range, actualGlyphRange: nil)
+            let s = text.substring(with: chars)
             guard s.contains(where: { !$0.isWhitespace }) else { return }
             starts.append(range.location)
-            lines.append((rect.minY + self.layout.location(forGlyphAt: range.location).y, s.contains("\u{FFFC}")))
+            let block = self.storage.attribute(.replyBlock, at: chars.location, effectiveRange: nil) as? ReplyBlock
+            let id = block.map { ObjectIdentifier($0).hashValue }
+            // A code block's first line, under its title bar: on the chat's next line, wherever the bar put it.
+            let fresh = block?.kind == .code && id.map { codes.insert($0).inserted } == true
+            lines.append(LiftLayout.SnapLine(baseline: rect.minY + self.layout.location(forGlyphAt: range.location).y,
+                                             block: s.contains("\u{FFFC}"), quote: block?.kind == .quote ? id : nil, fresh: fresh))
         }
         let reach = UIFont.preferredFont(forTextStyle: .body, compatibleWith: traitCollection).pointSize * 0.6
-        snapper.targets = Dictionary(zip(starts, LiftLayout.snap(lines, to: rows, reach: reach)), uniquingKeysWith: { a, _ in a })
+        let snapped = LiftLayout.snap(lines, to: rows, folds: folds, reach: reach)
+        snapper.targets = Dictionary(zip(starts, snapped.map(\.at)), uniquingKeysWith: { a, _ in a })
+        snapper.hidden = Set(zip(starts, snapped).filter { $0.1.hidden }.map(\.0))
         layout.invalidateLayout(forCharacterRange: all, actualCharacterRange: nil)
         layout.ensureLayout(for: textContainer)
         setNeedsDisplay()
@@ -374,6 +397,7 @@ final class LiftUITextView: UITextView, UITextViewDelegate, UIEditMenuInteractio
         var out: [LineSelectionRect] = []
         let glyphs = layout.glyphRange(forCharacterRange: NSRange(location: start, length: end - start), actualCharacterRange: nil)
         layout.enumerateLineFragments(forGlyphRange: glyphs) { line, used, _, lineGlyphs, _ in
+            guard !self.snapper.hidden.contains(lineGlyphs.location) else { return } // a folded quote's, past its fold
             let chars = self.layout.characterRange(forGlyphRange: lineGlyphs, actualGlyphRange: nil)
             let lineEnd = NSMaxRange(chars)
             let from = max(chars.location, start), to = min(lineEnd, end)
@@ -400,6 +424,9 @@ final class LiftUITextView: UITextView, UITextViewDelegate, UIEditMenuInteractio
                 add(left, x(to), start: from == start, end: true)
             }
         }
+        // A selection starting or ending in a folded quote's hidden lines: its handle on the nearest line that shows.
+        if let first = out.first, !out.contains(where: \.containsStart) { out[0] = first.marked(start: true) }
+        if let last = out.last, !out.contains(where: \.containsEnd) { out[out.count - 1] = last.marked(end: true) }
         return out.isEmpty ? super.selectionRects(for: range) : out
     }
 
@@ -555,7 +582,9 @@ extension LiftLines {
         layout.ensureLayout(for: c)
         var out: [Line] = []
         let text = v.textStorage
+        let hidden = (layout.delegate as? LineSnap)?.hidden ?? []
         layout.enumerateLineFragments(forGlyphRange: layout.glyphRange(for: c)) { rect, _, _, range, _ in
+            guard !hidden.contains(range.location) else { return } // a folded quote's, past its fold
             var first = -1, last = -1, word = -1, n = 0
             for g in range.location..<NSMaxRange(range) {
                 let kind = layout.propertyForGlyph(at: g)
@@ -659,6 +688,9 @@ final class ReplyBlocksView: UIView {
 /// Puts each line of a text view where `targets` says its baseline goes (by the line's first glyph); the rest as laid out.
 nonisolated final class LineSnap: NSObject, NSLayoutManagerDelegate {
     var targets: [Int: CGFloat] = [:]
+    /// Lines (by their first glyph) of a folded quote past its fold: put at the card's bottom, they get no highlight
+    /// and are not measured (`LiftUITextView.selectionRects`, `LiftLines`); copied, they are there.
+    var hidden: Set<Int> = []
 
     func layoutManager(_ layoutManager: NSLayoutManager, shouldSetLineFragmentRect lineFragmentRect: UnsafeMutablePointer<CGRect>,
                        lineFragmentUsedRect: UnsafeMutablePointer<CGRect>, baselineOffset: UnsafeMutablePointer<CGFloat>,
@@ -683,6 +715,11 @@ final class LineSelectionRect: UITextSelectionRect {
         self.end = end
     }
 
+    /// The same, holding the selection's start or end too.
+    func marked(start: Bool = false, end: Bool = false) -> LineSelectionRect {
+        LineSelectionRect(box, start: self.start || start, end: self.end || end)
+    }
+
     override var rect: CGRect { box }
     override var writingDirection: NSWritingDirection { .leftToRight }
     override var containsStart: Bool { start }
@@ -700,6 +737,8 @@ enum ReplyText {
         var body: UIFont
         var code: UIFont
         var inlineCode: UIFont
+        /// A quote's room on the right for its mark (`ReplyQuote.markRoom`, scaled as a caption).
+        var quoteMarkRoom: CGFloat
         var color: UIColor
         var link: UIColor
         /// The fourth to sixth heading levels' ink (`ReplyMetrics.heading4`).
@@ -719,6 +758,7 @@ enum ReplyText {
             body = quiet ? base.withSize(base.pointSize * ReplyMetrics.quiet) : base
             code = .monospacedSystemFont(ofSize: body.pointSize * Theme.Level.code.size / Theme.Level.body.size, weight: .regular)
             inlineCode = .monospacedSystemFont(ofSize: body.pointSize * ReplyMetrics.inlineCode, weight: .regular)
+            quoteMarkRoom = UIFontMetrics(forTextStyle: .caption1).scaledValue(for: Theme.Space.xl, compatibleWith: traits)
             link = UIColor(Theme.accent)
             secondaryInk = UIColor(Theme.Reply.secondaryInk)
             self.traits = traits
@@ -780,6 +820,8 @@ enum ReplyText {
         var top: CGFloat = 0
         var bottom: CGFloat = ReplyMetrics.paragraphBottom
         var pad: CGFloat = 0
+        /// More room over its first line inside its background: a code block's title bar.
+        var head: CGFloat = 0
     }
 
     private struct Line {
@@ -852,7 +894,7 @@ enum ReplyText {
                 }
                 if !deep, let f = Self.fence(trimmed) {
                     let block = ReplyBlock(.code, pad: Theme.Space.m)
-                    blocks.append(Block(top: ReplyMetrics.codeTop, bottom: ReplyMetrics.codeBottom, pad: Theme.Space.m))
+                    blocks.append(Block(top: ReplyMetrics.codeTop, bottom: ReplyMetrics.codeBottom, pad: Theme.Space.m, head: ReplyMetrics.codeBar))
                     open = .code(block, fence: f.0, count: f.1)
                     levels = []
                     continue
@@ -867,7 +909,7 @@ enum ReplyText {
                 // Four spaces in, after a blank line and not in a list: code, as written.
                 if deep, !inList, open == nil || afterBlank {
                     let block = ReplyBlock(.code, pad: Theme.Space.m)
-                    blocks.append(Block(top: ReplyMetrics.codeTop, bottom: ReplyMetrics.codeBottom, pad: Theme.Space.m))
+                    blocks.append(Block(top: ReplyMetrics.codeTop, bottom: ReplyMetrics.codeBottom, pad: Theme.Space.m, head: ReplyMetrics.codeBar))
                     open = .code(block, fence: nil, count: 0)
                     code(String(raw.dropFirst(min(indent, 4))), block)
                     continue
@@ -912,15 +954,18 @@ enum ReplyText {
                     let block: ReplyBlock
                     if case .quote(let b) = open { block = b } else {
                         block = ReplyBlock(.quote)
-                        blocks.append(Block())
+                        blocks.append(Block(pad: Theme.Space.s))
                         open = .quote(block)
                         levels = []
                     }
+                    // As the chat's quote card (`ReplyQuote`): after its bar, clear of its quote mark on the right.
                     let line = inline(String(rest), font: look.body, color: .secondaryLabel)
                     line.addAttribute(.replyBlock, value: block, range: NSRange(location: 0, length: line.length))
+                    let lead = Theme.Size.bar + Theme.Space.m, mark = look.quoteMarkRoom
                     add(line, in: blocks.count - 1, lineSpacing: true) { s in
-                        s.firstLineHeadIndent = Theme.Space.m
-                        s.headIndent = Theme.Space.m
+                        s.firstLineHeadIndent = lead
+                        s.headIndent = lead
+                        s.tailIndent = -mark
                     }
                     continue
                 }
@@ -1043,7 +1088,7 @@ enum ReplyText {
             let real = lines.indices.filter { lines[$0].block != nil }
             for (k, i) in real.enumerated() {
                 let line = lines[i], b = blocks[line.block!]
-                if k == 0 { line.style.paragraphSpacingBefore = b.pad }
+                if k == 0 { line.style.paragraphSpacingBefore = b.pad + b.head }
                 guard k + 1 < real.count else {
                     line.style.paragraphSpacing = b.pad
                     continue
@@ -1052,7 +1097,7 @@ enum ReplyText {
                 if next.block == line.block {
                     line.style.paragraphSpacing = next.item ? look.size * ReplyMetrics.itemTop : 0
                 } else {
-                    let gap = max(b.bottom, nb.top) + b.pad + nb.pad
+                    let gap = max(b.bottom, nb.top) + b.pad + nb.pad + nb.head
                     line.style.paragraphSpacing = max(0, gap - line.style.lineSpacing)
                 }
             }
@@ -1121,7 +1166,7 @@ enum ReplyText {
                 var attrs: [NSAttributedString.Key: Any] = [.foregroundColor: color]
                 if intent.contains(.code) {
                     f = look.inlineCode.withSize(font.pointSize * ReplyMetrics.inlineCode)
-                    attrs[.backgroundColor] = UIColor(Theme.codeBackground)
+                    attrs[.backgroundColor] = UIColor(Theme.inlineCodeBackground)
                 }
                 if intent.contains(.stronglyEmphasized) { f = look.weight(f, .semibold) }
                 if intent.contains(.emphasized), let d = f.fontDescriptor.withSymbolicTraits(f.fontDescriptor.symbolicTraits.union(.traitItalic)) {

@@ -10134,6 +10134,9 @@ LIFT_MIX = "a1f3c2d4-0000-4000-8000-0000000c1e0b"
 # wraps, a list, a code block, a quote and a link, after a message of yours with a path; in an Agents chat and in a
 # Persona conversation. Every style's position test lifts and selects both.
 LIFT_KEY = "a1f3c2d4-0000-4000-8000-0000000c1e0c"
+# An answer with a quote long enough to fold (#2984), between two paragraphs, the second with a path there in code:
+# lifted and selected, the quote stays folded (or open, as it was in the chat) and its hidden lines are not selected.
+LIFT_FOLD = "a1f3c2d4-0000-4000-8000-0000000c1e0d"
 LIFT_ASK_KEY = "b2e4d6f8-0000-4000-8000-0000000c1e0c"
 LIFT_KEY_MINE = "你先把管理密钥存到本机文件，我跑命令读一下。放在 ~/.config/example-gateway/management.key，权限设成 600，别打印到日志里。"
 LIFT_KEY_ANSWER = ("管理 Key 已经存到本机（hub）了：\n`/home/me/.config/example-gateway/management.key`\n\n"
@@ -10199,6 +10202,15 @@ def mock_message_lift():
            "核对用的命令：\n\n```sh\nscripts/check.sh --since 1h --quiet\n```\n\n"
            "> 日报的模板改过一次，标题里的日期现在按北京时间写。\n\n下一次核对在整点之后五分钟。")
     ITEMS[LIFT_MIX] = [it("user", "text", 9, text=mine), it("assistant", "text", 7, text=mix)]
+    fold = ("评审意见原文如下，我按模块标了要改的地方：\n\n"
+            "> 登录页：按钮文字太长，小屏上换行；倒计时期间没有读屏提示。\n"
+            "> 注册页：日语下「获取验证码」被截短，手机号输错时只变红，没有说明原因。\n"
+            "> 设置页：深色模式下说明文字的对比度不够，大字号下开关和标题挤在一起。\n"
+            "> 共用组件：按钮标签要单行，放不下时先缩小字号，最小到 0.8 倍。\n"
+            "> 测试：截图基准图等确认后再更新，失败的两张和这次改动无关。\n\n"
+            "改动记在 `notes/status.md` 里，改完我跑一遍截图测试，再把结果发你。")
+    ITEMS[LIFT_FOLD] = [it("user", "text", 8, text="把上周评审的意见贴给我看看"), it("assistant", "text", 6, text=fold)]
+    SESSIONS.append(sess("macbook", LIFT_FOLD, "评审意见", repo, "done", "done", "shop-app", 17, "lift", 5, 6, "改完我跑一遍截图测试，再把结果发你。"))
     ITEMS[LIFT_KEY] = [it("user", "text", 6, text=LIFT_KEY_MINE), it("assistant", "text", 5, text=LIFT_KEY_ANSWER)]
     SESSIONS.append(sess("macbook", LIFT_KEY, "保存管理密钥", repo, "done", "done", "shop-app", 17, "lift", 4, 5, "存好之后要删掉这个文件就跟我说一声。"))
     ITEMS[LIFT_ASK_KEY] = [it("user", "text", 6, text=LIFT_KEY_MINE), it("assistant", "text", 5, text=LIFT_KEY_ANSWER)]

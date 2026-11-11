@@ -22,6 +22,8 @@ final class MessageLiftUITests: XCTestCase {
     /// long path in inline code that wraps, a list, a code block, a quote and a link; in an Agents chat and in Persona's.
     private let key = "macbook/a1f3c2d4-0000-4000-8000-0000000c1e0c"
     private let askKey = "server/b2e4d6f8-0000-4000-8000-0000000c1e0c"
+    /// An answer with a quote long enough to fold, then a paragraph with a path there in code.
+    private let fold = "macbook/a1f3c2d4-0000-4000-8000-0000000c1e0d"
     private let schemes = (ProcessInfo.processInfo.environment["PERSONA_LIFT_SCHEME"] ?? "light").split(separator: ",").map(String.init)
     private var scheme = "light"
 
@@ -373,7 +375,8 @@ final class MessageLiftUITests: XCTestCase {
         }
     }
 
-    /// Answers: a short one, one with inline code, a list, a code block and a quote, and one taller than the screen.
+    /// Answers: a short one, one with inline code, a list, a code block and a quote, one taller than the screen, and one
+    /// with a quote long enough to fold, folded and then opened.
     @MainActor func testAnAnswerStaysWhereItIs() throws {
         inEachScheme {
             launchWithLines(short)
@@ -384,6 +387,15 @@ final class MessageLiftUITests: XCTestCase {
             app = XCUIApplication()
             launchWithLines(long)
             checkTheWordsStay("有问题的话告诉我", "answer-long", moves: true)
+            // A folded quote stays folded, its hidden lines no lines to select; opened in the chat, it lifts open.
+            app = XCUIApplication()
+            launchWithLines(fold)
+            checkTheWordsStay("改完我跑一遍截图测试", "answer-quote-folded", moves: true, close: true)
+            let chevron = app.buttons["quote-fold"].firstMatch
+            XCTAssertTrue(chevron.waitForExistence(timeout: 5), "the long quote did not fold")
+            chevron.tap()
+            sleep(1)
+            checkTheWordsStay("改完我跑一遍截图测试", "answer-quote-open", moves: true)
         }
     }
 

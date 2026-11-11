@@ -161,21 +161,50 @@ nonisolated enum LiftLayout {
         return 0
     }
 
+    /// A line of the text view over a lifted message's words (`LiftLayout.snap`): its baseline as laid out, whether
+    /// it holds a picture (a table), and the quote it is in (its `ReplyBlock`), if any.
+    struct SnapLine: Equatable {
+        var baseline: CGFloat
+        var block = false
+        var quote: Int?
+        /// It starts a block whose top the text view cannot place (a code block under its title bar): it takes the
+        /// next row, as the line after a picture does.
+        var fresh = false
+    }
+
+    /// Where `SnapLine` goes: `at`, its baseline; `hidden`, a line of a folded quote past its fold.
+    struct Snapped: Equatable {
+        var at: CGFloat
+        var hidden = false
+    }
+
     /// Where the lines of the text view over a lifted message's words go (#3188): on the chat's own lines. lines: the
-    /// text view's, in order, with the baseline it gave each and whether it holds a picture (a table); rows: the chat's
-    /// baselines, sorted. Each line takes the nearest row ahead within `reach` of where it would be (its baseline, moved
-    /// as much as the line before it was), so a line the chat has no row for (a rule) or a row the text view has no
-    /// line for is passed over; a picture keeps that move, and the line after it takes the next row. The rest of the
-    /// text view's lines (and all of them, with no rows) stay as they are, moved as much as the line before.
-    static func snap(_ lines: [(baseline: CGFloat, block: Bool)], to rows: [CGFloat], reach: CGFloat) -> [CGFloat] {
-        var out: [CGFloat] = [], next = 0, moved: CGFloat = 0, afterBlock = false
+    /// text view's, in order; rows: the chat's baselines, sorted, without the lines a folded quote hides; folds: the
+    /// folded quotes' cards, top to bottom. Each line takes the nearest row ahead within `reach` of where it would be
+    /// (its baseline, moved as much as the line before it was), so a line the chat has no row for (a rule) or a row the
+    /// text view has no line for is passed over; a picture keeps that move, and the line after it (and a `fresh` line)
+    /// takes the next row.
+    /// A quote whose first line lands in a folded card shows as many lines as the card has rows: the rest are hidden
+    /// (at the card's bottom), and the line after them takes the next row, as after a picture. The rest of the text
+    /// view's lines (and all of them, with no rows) stay as they are, moved as much as the line before.
+    static func snap(_ lines: [SnapLine], to rows: [CGFloat], folds: [ClosedRange<CGFloat>] = [], reach: CGFloat) -> [Snapped] {
+        var out: [Snapped] = [], next = 0, moved: CGFloat = 0, afterBlock = false
+        // The folded quote being passed: which, its card, and how many of its rows are left.
+        var folding: (quote: Int, card: ClosedRange<CGFloat>, left: Int)?
+        var started: Set<Int> = []
         for line in lines {
             let at = line.baseline + moved
-            guard !line.block else {
-                out.append(at)
+            if let f = folding, line.quote == f.quote, f.left == 0 {
+                out.append(Snapped(at: f.card.upperBound, hidden: true))
                 afterBlock = true
                 continue
             }
+            guard !line.block else {
+                out.append(Snapped(at: at))
+                afterBlock = true
+                continue
+            }
+            if line.fresh { afterBlock = true }
             var best: Int?
             var k = next
             while k < rows.count, afterBlock || rows[k] <= at + reach {
@@ -184,15 +213,97 @@ nonisolated enum LiftLayout {
                 k += 1
             }
             afterBlock = false
-            if let b = best {
-                moved = rows[b] - line.baseline
-                next = b + 1
-                out.append(rows[b])
-            } else {
-                out.append(at)
+            guard let b = best else {
+                out.append(Snapped(at: at))
+                continue
+            }
+            moved = rows[b] - line.baseline
+            next = b + 1
+            out.append(Snapped(at: rows[b]))
+            if let q = line.quote, !started.contains(q) {
+                started.insert(q)
+                if let card = folds.first(where: { $0.contains(rows[b]) }) {
+                    folding = (q, card, rows[b...].prefix { card.contains($0) }.count - 1)
+                }
+            } else if let f = folding, line.quote == f.quote {
+                folding?.left = max(f.left - 1, 0)
             }
         }
         return out
+    }
+}
+
+/// A folded quote's card (`ReplyQuote`): its words are all laid out, the lines past the fold hidden, so those are no
+/// lines of the words to put the text view's on or to measure (#3188).
+struct FoldedQuotes: PreferenceKey {
+    static var defaultValue: [Anchor<CGRect>] { [] }
+    static func reduce(value: inout [Anchor<CGRect>], nextValue: () -> [Anchor<CGRect>]) { value += nextValue() }
+}
+
+/// A line of the words a view shows (`Text.LayoutKey`), in its coordinates: its glyphs, where its text starts, its
+/// first glyph's left edge, its baseline and its last glyph's right edge.
+struct WordLine: Equatable {
+    var glyphs: Int
+    var origin: CGPoint
+    var minX: CGFloat
+    var baseline: CGFloat
+    var maxX: CGFloat
+}
+
+/// The lines of the words under a view and its folded quotes' cards, in its coordinates (`readingShownWords`).
+struct ShownWords: PreferenceKey, Equatable {
+    var lines: [WordLine] = []
+    var folds: [CGRect] = []
+
+    static var defaultValue: ShownWords { ShownWords() }
+    static func reduce(value: inout ShownWords, nextValue: () -> ShownWords) {
+        let n = nextValue()
+        value.lines += n.lines
+        value.folds += n.folds
+    }
+
+    /// The lines that show: not those of a text in a folded quote past its card's bottom.
+    var shown: [WordLine] {
+        lines.filter { l in !folds.contains { $0.contains(l.origin) && l.baseline > $0.maxY + 0.5 } }
+    }
+
+    /// The baselines of the lines that show, sorted, one a row (a numbered item's marker and its words share one).
+    var rows: [CGFloat] {
+        var rows: [CGFloat] = []
+        for b in shown.map(\.baseline).sorted() where rows.last.map({ b - $0 > 0.5 }) ?? true { rows.append(b) }
+        return rows
+    }
+
+    /// The folded quotes' cards from top to bottom, as the rows' spans (`LiftLayout.snap`).
+    var foldSpans: [ClosedRange<CGFloat>] { folds.sorted { $0.minY < $1.minY }.map { $0.minY...$0.maxY } }
+
+    static func measure(_ layouts: Text.LayoutKey.Value, _ geo: GeometryProxy) -> [WordLine] {
+        var out: [WordLine] = []
+        for a in layouts {
+            let p = geo[a.origin]
+            for line in a.layout {
+                let n = line.reduce(0) { $0 + $1.count }
+                guard n > 0, let fr = line.first, let lr = line.last, let fg = fr.first, let lg = lr.last else { continue }
+                out.append(WordLine(glyphs: n, origin: p, minX: p.x + fg.typographicBounds.rect.minX,
+                                    baseline: p.y + line.typographicBounds.origin.y, maxX: p.x + lg.typographicBounds.rect.maxX))
+            }
+        }
+        return out
+    }
+}
+
+extension View {
+    /// What its words show as (`ShownWords`: their lines, its folded quotes), for `read` to draw over them, in its
+    /// coordinates. Read where it is: it goes no further up (a reader around this one reads its own).
+    func readingShownWords<V: View>(@ViewBuilder _ read: @escaping (ShownWords) -> V) -> some View {
+        backgroundPreferenceValue(FoldedQuotes.self) { folds in
+            GeometryReader { geo in Color.clear.preference(key: ShownWords.self, value: ShownWords(folds: folds.map { geo[$0] })) }
+        }
+        .backgroundPreferenceValue(Text.LayoutKey.self) { layouts in
+            GeometryReader { geo in Color.clear.preference(key: ShownWords.self, value: ShownWords(lines: ShownWords.measure(layouts, geo))) }
+        }
+        .overlayPreferenceValue(ShownWords.self) { shown in read(shown) }
+        .transformPreference(ShownWords.self) { $0 = ShownWords() }
     }
 }
 
@@ -247,20 +358,9 @@ extension EnvironmentValues {
             .joined(separator: ";")
     }
 
-    /// The lines of every text under a view (`Text.LayoutKey`), placed by its geometry.
-    static func lines(_ layouts: Text.LayoutKey.Value, _ geo: GeometryProxy) -> String {
-        let o = geo.frame(in: .global).origin
-        var out: [Line] = []
-        for a in layouts {
-            let p = geo[a.origin]
-            for line in a.layout {
-                let n = line.reduce(0) { $0 + $1.count }
-                guard n > 0, let fr = line.first, let lr = line.last, let fg = fr.first, let lg = lr.last else { continue }
-                let x0 = o.x + p.x + fg.typographicBounds.rect.minX, x1 = o.x + p.x + lg.typographicBounds.rect.maxX
-                out.append((n, x0, o.y + p.y + line.typographicBounds.origin.y, x1, x1))
-            }
-        }
-        return encode(out)
+    /// The lines a view shows (`ShownWords.shown`), in the window: its origin there is `at`.
+    static func lines(_ shown: [WordLine], at o: CGPoint) -> String {
+        encode(shown.map { ($0.glyphs, o.x + $0.minX, o.y + $0.baseline, o.x + $0.maxX, o.x + $0.maxX) })
     }
 }
 
@@ -270,9 +370,9 @@ struct LiftLinesReader: ViewModifier {
 
     func body(content: Content) -> some View {
         if LiftLines.on {
-            content.overlayPreferenceValue(Text.LayoutKey.self) { layouts in
+            content.readingShownWords { shown in
                 GeometryReader { geo in
-                    let s = LiftLines.lines(layouts, geo)
+                    let s = LiftLines.lines(shown.shown, at: geo.frame(in: .global).origin)
                     Color.clear.onAppear { write(s) }.onChange(of: s) { _, s in write(s) }
                 }
             }

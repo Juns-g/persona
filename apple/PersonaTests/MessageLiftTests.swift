@@ -80,7 +80,7 @@ struct MessageLiftTests {
     /// the chat has no row for passed over with the move before it, and after a picture the next line on the next row.
     @Test func theTextViewsLinesGoOnTheChats() {
         func snap(_ lines: [(CGFloat, Bool)], _ rows: [CGFloat]) -> [CGFloat] {
-            LiftLayout.snap(lines.map { (baseline: $0.0, block: $0.1) }, to: rows, reach: 10)
+            LiftLayout.snap(lines.map { LiftLayout.SnapLine(baseline: $0.0, block: $0.1) }, to: rows, reach: 10).map(\.at)
         }
         // Its lines a little further apart than the chat's: each goes on the chat's.
         #expect(snap([(20, false), (44.7, false), (69.4, false)], [20, 44.3, 68.6]) == [20, 44.3, 68.6])
@@ -90,5 +90,28 @@ struct MessageLiftTests {
         #expect(snap([(20, false), (60, true), (200, false), (224, false)], [20, 240, 264]) == [20, 60, 240, 264])
         // No rows: as laid out.
         #expect(snap([(20, false), (44, false)], []) == [20, 44])
+    }
+
+    /// A code block's first line under its title bar (`fresh`) takes the chat's next row, however far the bar put it.
+    @Test func aCodeBlocksFirstLineGoesUnderItsBar() {
+        let lines = [LiftLayout.SnapLine(baseline: 20), LiftLayout.SnapLine(baseline: 60, fresh: true), LiftLayout.SnapLine(baseline: 80)]
+        #expect(LiftLayout.snap(lines, to: [20, 100, 120], reach: 10).map(\.at) == [20, 100, 120])
+    }
+
+    /// A folded quote (#3188): the chat shows as many of its lines as its card has rows; the text view's others are
+    /// hidden at the card's bottom, and the line after the quote takes the next row (the paragraph after the card).
+    @Test func aFoldedQuotesHiddenLinesAreNotOnTheChats() {
+        let q = 7
+        let lines = [LiftLayout.SnapLine(baseline: 20)]
+            + (0..<6).map { LiftLayout.SnapLine(baseline: 52 + CGFloat($0) * 24, quote: q) }
+            + [LiftLayout.SnapLine(baseline: 212)]
+        // The card spans 36...130 and shows four lines (52, 76, 100, 124); the paragraph after it is at 160.
+        let out = LiftLayout.snap(lines, to: [20, 52, 76, 100, 124, 160], folds: [36...130], reach: 10)
+        #expect(out.map(\.at) == [20, 52, 76, 100, 124, 130, 130, 160])
+        #expect(out.map(\.hidden) == [false, false, false, false, false, true, true, false])
+        // Open (no fold): every line on its row.
+        let open = LiftLayout.snap(lines, to: [20, 52, 76, 100, 124, 148, 172, 212], reach: 10)
+        #expect(open.map(\.at) == [20, 52, 76, 100, 124, 148, 172, 212])
+        #expect(!open.contains { $0.hidden })
     }
 }
