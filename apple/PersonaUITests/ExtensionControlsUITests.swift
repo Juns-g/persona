@@ -79,9 +79,11 @@ final class ExtensionControlsUITests: XCTestCase {
         (s.switches.firstMatch.exists ? s.switches.firstMatch : s).tap()
     }
 
+    /// An alert's button by its identifier, else its label. The first match: iOS 27 nests the button in one with the
+    /// same identifier.
     @MainActor private func button(_ alert: XCUIElement, _ id: String, _ label: String) -> XCUIElement {
-        let byID = alert.buttons[id]
-        return byID.exists ? byID : alert.buttons[label]
+        let byID = alert.buttons.matching(identifier: id).firstMatch
+        return byID.exists ? byID : alert.buttons.matching(identifier: label).firstMatch
     }
 
     @MainActor private func value(_ expected: String, of element: XCUIElement) {
