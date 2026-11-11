@@ -8,10 +8,10 @@ import XCTest
 /// a finger (let go after a slow drag, settled, flicked to the end and pulled past it, back at the top), in every style,
 /// light and dark (`TEST_RUNNER_PERSONA_UI_STYLE` keeps a run to one style).
 ///
-/// Measured on the screenshot: the spread of luminance (0…1) over each item title on screen between the stuck title's
-/// edge and the search bar's (1.0 for a sharp title; 0.07 to 0.08 in the iPhone's recording of the blur). Against
-/// scripts/mock/mock_hub.py with MOCK_MANAGERS=0 (PERSONA_MOCK_HUB). TEST_RUNNER_PERSONA_SHOTS=<dir> keeps each step's
-/// screenshot.
+/// Measured on the screenshot: the spread of luminance (0…1) over each row's title on screen (the open items' and the
+/// waiting sessions') between the stuck title's edge and the search bar's (1.0 for a sharp title; 0.07 to 0.08 in the
+/// iPhone's recording of the blur). Against scripts/mock/mock_hub.py with MOCK_MANAGERS=0 (PERSONA_MOCK_HUB).
+/// TEST_RUNNER_PERSONA_SHOTS=<dir> keeps each step's screenshot.
 final class InboxScrollEdgeTests: XCTestCase {
     private var app: XCUIApplication!
     private var pair = ""
@@ -21,6 +21,7 @@ final class InboxScrollEdgeTests: XCTestCase {
     /// Above the search bar: the bottom edge's fade.
     private static let bottomEdge: CGFloat = 48
     private static let sharp = 0.3
+    private static let agentRow = "inbox.agentRow"
     private static let styles = ["glass", "clay", "island", "lark", "beautiful"]
 
     override func setUpWithError() throws {
@@ -78,7 +79,9 @@ final class InboxScrollEdgeTests: XCTestCase {
     }
 
     @MainActor private func scroll(_ titles: [String], as run: String) {
-        let first = app.staticTexts.matching(NSPredicate(format: "label IN %@", titles)).firstMatch
+        // The first row: a waiting session's, or an item's (BeautifulUI's chips take two lines and push the items down).
+        let first = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier == %@ OR label IN %@", Self.agentRow, titles)).firstMatch
         guard first.waitForExistence(timeout: 20) else { return XCTFail("the inbox did not load (\(run)):\n\(app.debugDescription)") }
         sleep(2) // Done's day counts and its Jump To
 
@@ -113,7 +116,7 @@ final class InboxScrollEdgeTests: XCTestCase {
         assertSharp("back at the top", run, titles)
     }
 
-    /// Every item title on screen between the edges reads as sharp text; at least one is there.
+    /// Every row title on screen between the edges reads as sharp text; at least one is there.
     @MainActor private func assertSharp(_ step: String, _ run: String, _ titles: [String]) {
         let shot = app.windows.firstMatch.screenshot()
         save(shot, "\(step) \(run)")
@@ -123,15 +126,38 @@ final class InboxScrollEdgeTests: XCTestCase {
         let top = app.navigationBars.firstMatch.frame.maxY + Self.topEdge
         let search = app.searchFields.firstMatch
         let bottom = (search.exists ? search.frame.minY : window.maxY) - Self.bottomEdge
-        let shown = app.staticTexts.matching(NSPredicate(format: "label IN %@", titles)).allElementsBoundByIndex
-            .map { $0.frame }.filter { $0.minY >= top && $0.maxY <= bottom && $0.width > 1 }
-        XCTAssertFalse(shown.isEmpty, "no item title between the edges \(step) (\(run), \(top)…\(bottom))")
+        let shown = rowTitles(Set(titles)).filter { $0.minY >= top && $0.maxY <= bottom && $0.width > 1 }
+        XCTAssertFalse(shown.isEmpty, "no row title between the edges \(step) (\(run), \(top)…\(bottom))")
         for f in shown {
             let r = f.offsetBy(dx: -window.minX, dy: -window.minY).insetBy(dx: -2, dy: -2)
             let spread = Self.spread(image, CGRect(x: r.minX * scale, y: r.minY * scale, width: r.width * scale, height: r.height * scale))
             print("INBOX-EDGE \(run) \(step) y=\(Int(f.minY)): \(String(format: "%.3f", spread))")
             XCTAssertGreaterThan(spread, Self.sharp, "an inbox row is blurred \(step) (\(run), title at y=\(Int(f.minY)))")
         }
+    }
+
+    /// The frames of the row titles on screen, from one snapshot: the open items' (by their titles) and the waiting
+    /// sessions' (each session row's first text).
+    @MainActor private func rowTitles(_ titles: Set<String>) -> [CGRect] {
+        guard let root = try? app.windows.firstMatch.snapshot() else { return [] }
+        var frames: [CGRect] = []
+        func firstText(_ e: XCUIElementSnapshot) -> XCUIElementSnapshot? {
+            for c in e.children {
+                if c.elementType == .staticText { return c }
+                if let t = firstText(c) { return t }
+            }
+            return nil
+        }
+        func walk(_ e: XCUIElementSnapshot) {
+            if e.elementType == .button, e.identifier == Self.agentRow {
+                if let t = firstText(e) { frames.append(t.frame) }
+                return
+            }
+            if e.elementType == .staticText, titles.contains(e.label) { frames.append(e.frame) }
+            e.children.forEach(walk)
+        }
+        walk(root)
+        return frames
     }
 
     @MainActor private func save(_ shot: XCUIScreenshot, _ name: String) {
