@@ -32,6 +32,7 @@ import persona.core.domain.tasks.NeedsYouEntry
 import persona.core.domain.tasks.RunningEntry
 import persona.core.domain.tasks.TaskState
 import persona.core.domain.tasks.notDoneReason
+import persona.core.domain.tasks.orphanedLine
 import persona.core.domain.tasks.assistantEntries
 import kotlinx.coroutines.delay
 import persona.core.domain.sort.canApprove
@@ -63,6 +64,9 @@ internal data class TrayProgress(val id: String, val title: String, val todo: To
     /** Why the stopped task is not done, from the hub's completion check (#3180): its row reads "Stopped, not done yet · …"
      *  in place of [text]; "" with no reason, null when there is nothing to say. */
     val whyNotDone: String? = null,
+    /** "Nobody is working on this · closed after an error" (#3618): the hub found the open task orphaned; in place of
+     *  [text] and [whyNotDone], unless an agent or the owner's ask says what it waits for. */
+    val orphaned: persona.core.contracts.CoreText? = null,
     /** Open, waiting on nobody, and none of its agents works (unread or seen, #3576): the row says Stopped, not In progress,
      *  and draws only a counted bar. Back to In progress once one of them works again. */
     val stopped: Boolean = false)
@@ -101,7 +105,8 @@ internal fun trayProgress(todos: List<Todo>, plans: List<TaskPlan>, host: Assist
                 ?: lead?.activity?.takeIf(String::isNotBlank) ?: lead?.lastText?.takeIf(String::isNotBlank),
             completed = countedReport?.step ?: countedPlan?.done, total = countedReport?.steps ?: countedPlan?.total,
             at = report?.at?.takeIf { reportIsCurrent } ?: plan?.at ?: todo.updatedAt,
-            pr = todo.prUrl?.takeIf(String::isNotBlank), whyNotDone = whyNotDone)
+            pr = todo.prUrl?.takeIf(String::isNotBlank), whyNotDone = whyNotDone,
+            orphaned = todo.orphanedLine.takeUnless { done || cancelled || todo.ask != null || state == TaskState.NeedsYou })
     }
     val pending = plans.filter { it.conversation == host.conversation && it.state == "open" }.flatMap { plan ->
         plan.tasks.mapIndexedNotNull { index, task ->
@@ -136,6 +141,7 @@ internal fun trayProgress(todos: List<Todo>, plans: List<TaskPlan>, host: Assist
             blocked = !cancelled && (row.blocked || (card.todo == null && card.identity.state in setOf("needs_user", "needs_you", "blocked", "failed", "interrupted"))),
             text = if (completed || cancelled) latestSummary ?: (if (row.done || row.cancelled) row.text else acceptedText) else row.text ?: latestSummary,
             whyNotDone = row.whyNotDone.takeUnless { completed || cancelled },
+            orphaned = row.orphaned.takeUnless { completed || cancelled },
             pr = row.pr ?: pr,
             at = listOfNotNull(card.identity.updatedAt, row.at).maxByOrNull { parseTime(it) ?: java.time.Instant.MIN })
             .let { it.copy(stopped = it.stopped && !it.done && !it.cancelled && !it.blocked) }
@@ -180,6 +186,7 @@ internal fun AssistantTrays(host: AssistantTaskHost, state: AssistantTrayState,
     val todos by host.tasks.todos.collectAsStateWithLifecycle()
     val plans by host.tasks.plans.collectAsStateWithLifecycle()
     val feeds by host.tasks.feeds.collectAsStateWithLifecycle()
+    val later by host.tasks.later.collectAsStateWithLifecycle()
     val main by host.tasks.mainConversation.collectAsStateWithLifecycle()
     val taskBusy by host.tasks.busy.collectAsStateWithLifecycle()
     val taskCards by host.tasks.taskCards.collectAsStateWithLifecycle()
@@ -193,8 +200,9 @@ internal fun AssistantTrays(host: AssistantTaskHost, state: AssistantTrayState,
     // a minute's tick moves tasks across the 48 h shelving line while nothing else changes, as on the To-dos page
     var nowMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
     LaunchedEffect(Unit) { while (true) { delay(60_000); nowMs = System.currentTimeMillis() } }
-    val entries = assistantEntries(host.conversation, main, todos, host.sessions, requests, plans.values, feed,
+    val entries = assistantEntries(host.conversation, main, todos, host.sessions, requests, plans.values, feed.filterNot { it.id in later },
         maxOf(nowMs, System.currentTimeMillis()), restores.read())
+    // "Later" is only a local, card-scoped choice; it never hides a newer draft for the same source item.
     // the conversation's own cards (Persona asking) are always the user's; they come first after the asking rows
     val own = requests.filter { it.sessionId == host.conversation }
     val asking = entries.needsYou.filter { (it as? NeedsYouEntry.Task)?.asks?.isNotEmpty() == true || (it as? NeedsYouEntry.Agent)?.asks?.isNotEmpty() == true }
@@ -267,8 +275,12 @@ internal fun AssistantTrays(host: AssistantTaskHost, state: AssistantTrayState,
                                     "assistant-review-${row?.id ?: "todo:${todo.id}"}", enabled, onOpen = { openTask(host, todo) }) { openTask(host, todo) }
                             }
                             if (drafts.isNotEmpty()) item { JSectionHeader(stringResource(R.string.chat_tray_drafts)) }
-                            items(drafts, key = { "draft:${it.id}" }) { draft ->
-                                TrayDecisionRow(draft.title, draft.text, R.string.chat_tray_send, "assistant-draft-${draft.id}",
+                            items(drafts, key = { "draft:${if (it is TrayDraft.Feed) it.item.id else it.id}" }) { draft ->
+                                if (draft is TrayDraft.Feed) {
+                                    Box(Modifier.testTag("assistant-draft-${draft.id}").padding(horizontal = Tokens.Space.s)) {
+                                        MessageCard(draft.item, host, todos, enabled && !busy)
+                                    }
+                                } else TrayDecisionRow(draft.title, draft.text, R.string.chat_tray_send, "assistant-draft-${draft.id}",
                                     enabled && !busy && draftPlaceholder(draft.text) == null) { onSend(draft) }
                             }
                         }
@@ -415,7 +427,7 @@ private fun TrayProgressRow(row: TrayProgress, activity: BackgroundWork? = null,
         else Text(stringResource(if (work != null) R.string.chat_tray_working else if (live && waiting) R.string.chat_tray_waiting
             else if (row.cancelled) R.string.chat_tray_cancelled else if (row.blocked) R.string.chat_tray_blocked else if (row.plan != null) R.string.chat_tray_planned
             else if (row.stopped) R.string.chat_tray_stopped_state else R.string.chat_tray_in_progress),
-            style = PersonaTheme.type.micro, color = if (row.blocked) palette.cautionText else palette.ink3, maxLines = 1)
+            style = PersonaTheme.type.micro, color = if (row.blocked || row.orphaned != null) palette.cautionText else palette.ink3, maxLines = 1)
     }) {
         if (live && (work != null || (working && !waiting))) {
             JSpinner(Modifier.testTag("assistant-work-spinner"))
@@ -427,7 +439,11 @@ private fun TrayProgressRow(row: TrayProgress, activity: BackgroundWork? = null,
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(Tokens.Space.xs)) {
             Text(row.title, style = PersonaTheme.type.bodyStrong, color = palette.ink, maxLines = 1, overflow = TextOverflow.Ellipsis)
             val text = row.whyNotDone?.let { if (it.isEmpty()) stringResource(R.string.chat_tray_stopped) else stringResource(R.string.chat_tray_stopped_reason, it) } ?: row.text
-            TrayBackgroundSubtitle(work, if (work != null) detail else if (waiting) row.text else text)
+            // nobody works on it: said where the row says what it does, in the caution color (never only the color: the words say it)
+            val orphaned = row.orphaned?.takeIf { work == null && !waiting }
+            if (orphaned != null) Text(orphaned.text(), Modifier.testTag("assistant-orphaned-${row.id}"), style = PersonaTheme.type.caption,
+                color = palette.cautionText, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            else TrayBackgroundSubtitle(work, if (work != null) detail else if (waiting) row.text else text)
             row.pr?.let { reference ->
                 val number = trayPullRequestNumber(reference)
                 Text(if (number == null) reference else stringResource(R.string.chat_tray_pr_number, number),

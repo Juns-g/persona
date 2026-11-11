@@ -165,6 +165,12 @@ type receiptBody struct {
 	PR      string         `json:"pr,omitempty"`
 	Machine string         `json:"machine,omitempty"`
 	Review  *receiptReview `json:"review,omitempty"`
+	// Criteria: a done receipt's list of its brief's criteria as they stood when the agent stopped (#3822,
+	// briefCriteriaNow): met or not met as the supervision ledger tracks them (#3635: the agent's reports and the
+	// reviews), unchecked while pending there, or dropped by a scope change.
+	// Absent without a brief or criteria. CriteriaMore: how many the list left out.
+	Criteria     []BriefCriterion `json:"criteria,omitempty"`
+	CriteriaMore int              `json:"criteria_more,omitempty"`
 	// Reroute names the machine a flexible task was moved off and where it landed, with the health-check reason;
 	// absent when it ran where it was asked (#2271).
 	Reroute *PlanReroute `json:"reroute,omitempty"`
@@ -360,6 +366,13 @@ func (s *Service) taskTurnSettled(ctx context.Context, machine, sid string) {
 			body.Review = &receiptReview{State: state, Criteria: len(v.DoneWhen)}
 		}
 	}
+	if current, ok := s.todoNow(t.ID); ok {
+		if list := s.briefCriteriaNow(current); len(list) > briefCriteriaMost {
+			body.Criteria, body.CriteriaMore = list[:briefCriteriaMost], len(list)-briefCriteriaMost
+		} else {
+			body.Criteria = list
+		}
+	}
 	if body.Summary == "" {
 		body.Summary = i18n.T(s.lang(cctx), "assistant-tasks.done")
 	}
@@ -412,6 +425,21 @@ func (s *Service) routeToTask(ctx context.Context, conversation, todoID, text st
 // routeToTaskChecked lets automatic decisions recheck their task after slow session/device lookups.
 // Direct user messages retain routeToTask's ability to reuse a completed task's agent.
 func (s *Service) routeToTaskChecked(ctx context.Context, conversation, todoID, text string, guard func(Todo) bool) (FeedItem, error) {
+	return s.routeToTaskAs(ctx, conversation, todoID, text, "", guard)
+}
+
+// routedRelay marks a routed item the hub wrote for the owner (`relay`): an answer of theirs it put into words for the
+// task's agent (a recommendation taken, an option chosen, a reply to a card), as opposed to what they typed to the
+// task themselves. The apps draw both as the owner's; where a task came from reads only the latter (decision.go).
+const routedRelay = "answer"
+
+// relayToTask is routeToTaskChecked for what the hub words on the owner's behalf (routedRelay).
+func (s *Service) relayToTask(ctx context.Context, conversation, todoID, text string, guard func(Todo) bool) (FeedItem, error) {
+	return s.routeToTaskAs(ctx, conversation, todoID, text, routedRelay, guard)
+}
+
+// routeToTaskAs is routeToTaskChecked; relay marks the routed item it leaves ("": the owner's own words).
+func (s *Service) routeToTaskAs(ctx context.Context, conversation, todoID, text, relay string, guard func(Todo) bool) (FeedItem, error) {
 	if err := s.ensureTodosLoaded(ctx); err != nil {
 		return FeedItem{}, err
 	}
@@ -450,5 +478,9 @@ func (s *Service) routeToTaskChecked(ctx context.Context, conversation, todoID, 
 	if err := s.call(sctx, c.MachineID, DeviceSessionSend, map[string]any{"session_id": c.SessionID, "text": text}, nil); err != nil {
 		return FeedItem{}, err
 	}
-	return s.appendFeed(sctx, conversation, feedRouted, todoID, map[string]string{"text": text})
+	body := map[string]string{"text": text}
+	if relay != "" {
+		body["relay"] = relay
+	}
+	return s.appendFeed(sctx, conversation, feedRouted, todoID, body)
 }

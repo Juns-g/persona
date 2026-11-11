@@ -47,6 +47,7 @@ const (
 	kbDebounce     = 5 * time.Second
 	kbItemsPoll    = 30 * time.Minute
 	kbCompressMax  = 8   // chats compressed per run
+	kbTagItemsMax  = 3   // item tagging calls per run (40 items each); what is left goes on next round
 	kbWaitingMost  = 200 // agents' turns kept until it opens
 	// kbRetryWaiting is how soon the loop tries to open again while agents' turns wait for it (the user's zone not
 	// read yet, the data directory still locked by the process before): not at the next round, two minutes on.
@@ -178,8 +179,8 @@ func (s *Service) kbOpenLocked(ctx context.Context, set assistantwire.KBSettings
 		if err != nil {
 			return nil, err
 		}
-		e := &kb.Engine{Store: st, TextDays: set.TextDays, AttachmentDays: set.AttachmentDays, AttachmentDaysBySource: set.AttachmentDaysBySource, RecordingDaysFunc: s.recordingDaysNow, ExtraDirs: kbReadDirs(set.ExtraDirs),
-			Selection: s.kbSelectionNow}
+		e := &kb.Engine{Store: st, TextDays: set.TextDays, AttachmentDays: set.AttachmentDays, AttachmentDaysBySource: set.AttachmentDaysBySource, RecordingDaysFunc: s.recordingDaysNow, MinutesDaysFunc: s.minutesDaysNow, ExtraDirs: kbReadDirs(set.ExtraDirs),
+			Selection: s.kbSelectionNow, TopicsOn: s.kbTopicsNow}
 		k.cur.Store(&kbOpened{eng: e, set: set})
 		return e, nil
 	}
@@ -214,8 +215,8 @@ func (s *Service) kbOpenLocked(ctx context.Context, set assistantwire.KBSettings
 	}
 	s.kbRezone(k.store, loc)
 	e := &kb.Engine{Store: k.store, Model: s.kbModel("inbox.triage"), ModelFor: func(id string) kb.Model { return s.kbModel(id) },
-		Owner: s.owner(ctx), Logf: s.logf, TextDays: set.TextDays, AttachmentDays: set.AttachmentDays, AttachmentDaysBySource: set.AttachmentDaysBySource, HandleKey: k.key, Index: s.kbIndexEntity, Unindex: s.kbUnindex, RecordingDaysFunc: s.recordingDaysNow, MinutesWritten: s.minutesWritten, LiveChanged: s.meetingKick, Changed: s.kbChanged, MineObserved: s.kbObserveOwner,
-		Selection: s.kbSelectionNow}
+		Owner: s.owner(ctx), Logf: s.logf, TextDays: set.TextDays, AttachmentDays: set.AttachmentDays, AttachmentDaysBySource: set.AttachmentDaysBySource, HandleKey: k.key, Index: s.kbIndexEntity, Unindex: s.kbUnindex, RecordingDaysFunc: s.recordingDaysNow, MinutesDaysFunc: s.minutesDaysNow, MinutesWritten: s.minutesWritten, LiveChanged: s.meetingKick, Changed: s.kbChanged, MineObserved: s.kbObserveOwner,
+		Selection: s.kbSelectionNow, TopicsOn: s.kbTopicsNow}
 	e.ObserveChanges()
 	e.ExtraDirs = kbReadDirs(set.ExtraDirs)
 	if !k.passed {
@@ -397,6 +398,7 @@ func (s *Service) kbLoop(ctx context.Context) {
 	if s.kb.dir == "" {
 		return
 	}
+	ctx = ai.Background(ctx) // its model calls give their turn back when queued under a connection's cap (ai/limit.go)
 	var r kbRounds
 	t := time.NewTicker(kbPoll)
 	defer t.Stop()
@@ -431,7 +433,10 @@ func (s *Service) kbLoop(ctx context.Context) {
 }
 
 // kbRounds is when the loop last did what it does less often than every round.
-type kbRounds struct{ items, prune, links time.Time }
+type kbRounds struct {
+	items, prune, links time.Time
+	tagMore             bool // item tagging stopped at its cap with untagged items left
+}
 
 // kbRound is one go of the loop.
 func (s *Service) kbRound(ctx context.Context, e *kb.Engine, r *kbRounds) {
@@ -446,20 +451,28 @@ func (s *Service) kbRound(ctx context.Context, e *kb.Engine, r *kbRounds) {
 	s.kbRun(ctx, func() { s.kbRezone(e.Store, loc) })
 	e.Owner = s.owner(ctx)                          // only this loop reads it (the models' prompts)
 	s.kbRun(ctx, func() { s.kbConnectors(ctx, e) }) // mail, GitHub, the plugins'…, each when it is due
-	for i, c := range e.DueForCompression(time.Now()) {
-		if i >= kbCompressMax || ctx.Err() != nil {
-			break
-		}
-		if err := e.Compress(ctx, c); err != nil {
-			if ai.IsPaused(err) { // the chats stay due: compressed once the connection is back
+	// Every step runs under kbRun: a panic in one is logged and the steps after it still run.
+	s.kbRun(ctx, func() {
+		for i, c := range e.DueForCompression(time.Now()) {
+			if i >= kbCompressMax || ctx.Err() != nil {
 				break
 			}
-			s.logf("kb: compress %s: %v", c.ID, err)
+			if err := e.Compress(ctx, c); err != nil {
+				if ai.IsPaused(err) { // the chats stay due: compressed once the connection is back
+					break
+				}
+				s.logf("kb: compress %s: %v", c.ID, err)
+			}
 		}
-	}
-	e.RefreshProjects(ctx, 3)
-	// Recordings: those past recording_days go (every round: the setting may just have shortened), complete ones get
-	// their summary, meetings their minutes (kb/minutes.go).
+	})
+	s.kbRun(ctx, func() { e.RefreshProjects(ctx, 3) })
+	// Knowledge points by topic (kb/topics.go; assistant.kb_topics): a couple of distill calls, then a couple of merges.
+	s.kbRun(ctx, func() {
+		e.DistillTopics(ctx, 2)
+		e.RefreshTopics(ctx, 2)
+	})
+	// Recordings: those past recording_days go, or keep only their minutes until minutes_days (every round: a setting
+	// may just have shortened), complete ones get their summary, meetings their minutes (kb/minutes.go).
 	s.kbRun(ctx, func() {
 		if n := e.PruneRecordings(time.Now()); n > 0 {
 			s.logf("kb: pruned %d recording(s)", n)
@@ -479,16 +492,21 @@ func (s *Service) kbRound(ctx context.Context, e *kb.Engine, r *kbRounds) {
 			}
 		})
 	}
-	if s.kbItemsDue(r.items) {
+	switch {
+	case s.kbItemsDue(r.items):
 		r.items = time.Now()
-		s.kbRun(ctx, func() { s.kbCollectItems(ctx, e) })
+		s.kbRun(ctx, func() { r.tagMore = s.kbCollectItems(ctx, e, r.tagMore) })
+	case r.tagMore: // untagged items left past the last run's cap
+		s.kbRun(ctx, func() { r.tagMore = s.kbTagItems(ctx, e, r.tagMore) })
 	}
 	daily := time.Since(r.prune) >= 24*time.Hour
 	if daily {
 		r.prune = time.Now()
-		if n := e.Prune(time.Now()); n > 0 {
-			s.logf("kb: pruned %d day(s) and document(s)", n)
-		}
+		s.kbRun(ctx, func() {
+			if n := e.Prune(time.Now()); n > 0 {
+				s.logf("kb: pruned %d day(s) and document(s)", n)
+			}
+		})
 	}
 	s.kbRun(ctx, func() { s.kbPostsUpkeep(e, daily) })
 }
