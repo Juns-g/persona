@@ -576,7 +576,9 @@ request, section 4.8). On iPhone and iPad (#2970) that is a terminal dialog of s
 Claude Code's AskUserQuestion, the assistant's ask_user and Codex's questions.
 
 - **Step capsules** (`ScreenSteps`, `BUIScreenSteps` in `apple/Persona/Views/Interactions/InteractionViews.swift`): one per
-  question, ticked once answered, the current one in the accent. They show progress only and are not buttons.
+  question, ticked once answered, the current one in the accent. They show progress only and are not buttons. When the
+  row is wider than the card (the largest text sizes) it scrolls, opening with the current one in sight; the card's title
+  then wraps to up to three lines.
 - **Previous / Next** move one question at a time. A question gone back to shows the answer it had.
 - **The review** (`ScreenReview`, `apple/Persona/Views/Interactions/ScreenReview.swift`): a row per question, Previous and
   **Submit N Answers**. A question left reads **Not answered** in the caution color; the main button then goes to it,

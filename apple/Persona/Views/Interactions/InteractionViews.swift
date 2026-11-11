@@ -270,6 +270,7 @@ struct CardFormKeepsEnd: PreferenceKey {
 /// so a long question never hides the conversation it is about.
 struct InteractionPanel: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.dynamicTypeSize) private var typeSize
     var interaction: Interaction
     @State private var collapsed = false
     @State private var formHeight: CGFloat = 0
@@ -343,7 +344,9 @@ struct InteractionPanel: View {
             ThemedIcon(interaction.symbol)
                 .font(Theme.Font.labelStrong)
                 .foregroundStyle(StatusPalette.needsYou.dot)
-            Text(panelTitle).font(Theme.Font.labelStrong).foregroundStyle(StatusPalette.needsYou.text).lineLimit(1)
+            // Whole at the largest text sizes too: there the title takes up to three lines (#2970).
+            Text(panelTitle).font(Theme.Font.labelStrong).foregroundStyle(StatusPalette.needsYou.text)
+                .lineLimit(typeSize.isAccessibilitySize ? 3 : 1)
             VoiceAskMark(interaction: interaction) // Asking by Voice (docs/assistant/voice.md 1.2 H)
             if collapsed {
                 Text(previewText).font(Theme.Font.secondary).foregroundStyle(.primary).lineLimit(1)
@@ -1350,28 +1353,32 @@ struct ScreenSteps: View {
     var current: Int?
 
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: Theme.Space.sm) {
-                ForEach(Array(steps.enumerated()), id: \.offset) { i, s in
-                    let now = i == current
-                    HStack(spacing: Theme.Space.xs) {
-                        Group {
-                            if s.done { ThemedIcon(Theme.Icon.done).font(.system(size: 8, weight: .bold)) }
-                            else { Text("\(i + 1)").font(.system(size: 9, weight: .bold).monospacedDigit()) } // type-scale: glyph (a step number in a 16 pt circle)
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: Theme.Space.sm) {
+                    ForEach(Array(steps.enumerated()), id: \.offset) { i, s in
+                        let now = i == current
+                        HStack(spacing: Theme.Space.xs) {
+                            Group {
+                                if s.done { ThemedIcon(Theme.Icon.done).font(.system(size: 8, weight: .bold)) }
+                                else { Text("\(i + 1)").font(.system(size: 9, weight: .bold).monospacedDigit()) } // type-scale: glyph (a step number in a 16 pt circle)
+                            }
+                            .foregroundStyle(s.done || now ? .white : .secondary)
+                            .scaledFrame(width: Theme.Size.mark, height: Theme.Size.mark)
+                            .background(now ? Theme.accent : s.done ? Theme.positive : Color.primary.opacity(0.1), in: .circle)
+                            Text(s.label).lineLimit(1)
                         }
-                        .foregroundStyle(s.done || now ? .white : .secondary)
-                        .scaledFrame(width: Theme.Size.mark, height: Theme.Size.mark)
-                        .background(now ? Theme.accent : s.done ? Theme.positive : Color.primary.opacity(0.1), in: .circle)
-                        Text(s.label).lineLimit(1)
+                        .font(now ? Theme.Font.labelStrong : Theme.Font.labelMedium)
+                        .foregroundStyle(s.done && !now ? .secondary : .primary)
+                        .padding(.leading, Theme.Space.xs).padding(.trailing, Theme.Space.s).padding(.vertical, Theme.Space.xs)
+                        .background(now ? Theme.Fill.chip : Color.primary.opacity(0.05), in: .capsule)
+                        .id(i)
                     }
-                    .font(now ? Theme.Font.labelStrong : Theme.Font.labelMedium)
-                    .foregroundStyle(s.done && !now ? .secondary : .primary)
-                    .padding(.leading, Theme.Space.xs).padding(.trailing, Theme.Space.s).padding(.vertical, Theme.Space.xs)
-                    .background(now ? Theme.Fill.chip : Color.primary.opacity(0.05), in: .capsule)
                 }
             }
+            .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
+            .stepInSight(current, proxy)
         }
-        .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(current.map { String(localized: "\(steps.count) questions, \(steps.filter(\.done).count) answered, on question \($0 + 1)") }
                             ?? String(localized: "\(steps.count) questions, \(steps.filter(\.done).count) answered"))
@@ -2016,17 +2023,30 @@ struct BUIScreenSteps: View {
     var current: Int?
 
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: Theme.Space.sm) {
-                ForEach(Array(steps.enumerated()), id: \.offset) { i, s in
-                    BUIPill(s.done ? s.label : "\(i + 1) \(s.label)", tone: i == current ? .accent : s.done ? .green : .neutral,
-                            icon: s.done ? .symbol(Theme.Icon.done) : nil)
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: Theme.Space.sm) {
+                    ForEach(Array(steps.enumerated()), id: \.offset) { i, s in
+                        BUIPill(s.done ? s.label : "\(i + 1) \(s.label)", tone: i == current ? .accent : s.done ? .green : .neutral,
+                                icon: s.done ? .symbol(Theme.Icon.done) : nil)
+                        .id(i)
+                    }
                 }
             }
+            .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
+            .stepInSight(current, proxy)
         }
-        .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(steps.count) questions, \(steps.filter(\.done).count) answered")
+    }
+}
+
+extension View {
+    /// The current step's capsule in sight: at the largest text sizes the row is wider than the card and scrolls, and the
+    /// question it is on may sit past the edge (#2970). When the row fits nothing moves.
+    func stepInSight(_ current: Int?, _ proxy: ScrollViewProxy) -> some View {
+        onAppear { if let current { proxy.scrollTo(current, anchor: .center) } }
+            .onChange(of: current) { _, now in if let now { proxy.scrollTo(now, anchor: .center) } }
     }
 }
 
