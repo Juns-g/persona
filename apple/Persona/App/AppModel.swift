@@ -259,6 +259,9 @@ final class AppModel {
     /// The directions' names by leader conversation id (`GET /api/v1/assistant/leaders`): the sidebar's Directions group
     /// shows these instead of the conversations' titles. Read again with the assistant; empty without leaders.
     private(set) var directionNames: [String: String] = [:]
+    /// How much work each direction holds (`GET /api/v1/assistant/leaders`, then the hub's `assistant_leaders` pushes):
+    /// the sidebar's "N working · N need you" under its name. Empty without leaders.
+    private(set) var directionCounts: [String: APIClient.LeaderCounts] = [:]
     @ObservationIgnored private var assistantRetryInFlight: Task<Void, Never>?
     /// The assistant conversation shown in the Chat tab (persisted across launches).
     ///
@@ -956,7 +959,7 @@ final class AppModel {
                 assistantConfig = updated
             }
             guard showsPage(of: api) else { return }
-            await refreshDirectionNames(api, leaders: st.leaders ?? [])
+            await refreshDirectionInfo(api, leaders: st.leaders ?? [])
             guard showsPage(of: api) else { return }
             // A hub that names no launcher gets the same retry state as a failed read (#4200): current hubs always
             // resolve one (their default), so an empty answer means an old hub — show Couldn't Load Settings instead of an
@@ -968,48 +971,54 @@ final class AppModel {
         }
     }
 
-    /// The directions' names for `leaders`: none without leaders; a hub that cannot list them keeps the names held
-    /// (or none), and the sidebar shows those conversations' titles.
-    private func refreshDirectionNames(_ api: APIClient, leaders: [String]) async {
+    /// The directions' names and counts for `leaders`: none without leaders; a hub that cannot list them keeps what is
+    /// held (or none), and the sidebar shows those conversations' titles.
+    private func refreshDirectionInfo(_ api: APIClient, leaders: [String]) async {
         guard !leaders.isEmpty else {
             if !directionNames.isEmpty { directionNames = [:] }
+            if !directionCounts.isEmpty { directionCounts = [:] }
             return
         }
-        guard let names = try? await api.directionNames(), showsPage(of: api), names != directionNames else { return }
-        directionNames = names
+        guard let list = try? await api.leaders(), showsPage(of: api) else { return }
+        let names = APIClient.directionNames(list)
+        let counts = APIClient.directionCounts(list)
+        if names != directionNames { directionNames = names }
+        if counts != directionCounts { directionCounts = counts }
     }
 
-    /// The assistant's leader conversations (the sidebar's Directions), never the main one: the pinned ones first, then
-    /// the ones the owner unpinned (#4331), each in the hub's order.
+    /// The assistant's leader conversations (the sidebar's Directions), never the main one, in the hub's order.
     var assistantLeaders: [String] {
         let main = assistantConfig?.main
-        let all = (assistantConfig?.leaders ?? []).filter { !$0.isEmpty && $0 != main }
-        return AssistantDirections.order(all, unpinned: assistantConfig?.leadersUnpinned ?? [])
+        return (assistantConfig?.leaders ?? []).filter { !$0.isEmpty && $0 != main }
     }
 
-    /// Whether direction `id` is pinned: a leader the owner has not unpinned.
-    func isDirectionPinned(_ id: String) -> Bool {
-        (assistantConfig?.leaders ?? []).contains(id) && !(assistantConfig?.leadersUnpinned ?? []).contains(id)
-    }
-
-    /// Pins or unpins a direction on the hub (#4331): shown at once, put back with the error when the hub refuses.
-    func setDirectionPinned(_ id: String, _ pinned: Bool) async {
-        guard let api, var cfg = assistantConfig else { return }
-        let before = cfg.leadersUnpinned
-        var off = (before ?? []).filter { $0 != id }
-        if !pinned { off.append(id) }
-        cfg.leadersUnpinned = off.isEmpty ? nil : off
-        assistantConfig = cfg
+    /// Makes conversation `id` a direction on the hub, or ends it (#4331): the hub's new list is read back, and an
+    /// error is shown as it is.
+    func setDirectionLead(_ id: String, _ lead: Bool) async {
+        guard let api else { return }
         Haptics.tap()
         do {
-            try await api.setDirectionPinned(id, pinned: pinned)
-        } catch {
-            if showsPage(of: api), var now = assistantConfig {
-                now.leadersUnpinned = before
-                assistantConfig = now
-            }
-            show(error)
+            if lead { try await api.makeDirection(id) } else { try await api.endDirection(id) }
+            await refreshAssistant()
+            toast = Toast(lead ? String(localized: "Direction Pinned [Assistant Sidebar 2e8a51]")
+                               : String(localized: "Direction Ended [Assistant Sidebar 9c07f3]"), style: .success)
+        } catch { show(error) }
+    }
+
+    /// The directions a hub pushed (#4331): its current leaders in order, their names and counts. A leader the page's
+    /// list does not know yet is read whole, so its row appears without a relaunch.
+    private func receiveLeaders(_ list: [APIClient.LeaderInfo]) {
+        let names = APIClient.directionNames(list)
+        if names != directionNames { directionNames = names }
+        let counts = APIClient.directionCounts(list)
+        if counts != directionCounts { directionCounts = counts }
+        let ids = list.map(\.id)
+        if ids != assistantLeaders, var cfg = assistantConfig {
+            cfg.leaders = ids
+            assistantConfig = cfg
         }
+        let known = Set((assistantConfig?.conversations ?? []).map(\.sessionID))
+        if ids.contains(where: { !known.contains($0) }) { Task { await refreshAssistant() } }
     }
 
     /// The Couldn't Load Settings retry: the page flips back to Reading at once, and repeated taps share the one request (#4200).
@@ -1864,6 +1873,9 @@ final class AppModel {
             // Settings › Managers reads the roster again (ManagersView watches this).
             if isHub { managersRevision += 1 }
             Task { await refreshManagerRoster(group) }
+        case .assistantLeaders(let manager, let leaders):
+            // Another manager's directions are that page's (docs/assistant/managers.md "Clients").
+            if isHub, assistantShows(manager) { receiveLeaders(leaders) }
         case .assistantFeed(let item):
             if isHub { TasksStore.shared.received(item, group: group) }
         case .assistantView(let view):
@@ -1993,6 +2005,7 @@ final class AppModel {
         case .personas: "personas"
         case .look: "look"
         case .managers: "managers"
+        case .assistantLeaders: "assistant_leaders"
         case .assistantFeed: "assistant_feed"
         case .assistantView: "assistant_view"
         case .assistantViewAction: "assistant_view_action"
@@ -3433,14 +3446,5 @@ nonisolated struct AssistantLists: Equatable {
         open = mine.filter { $0.archived != true }
         archived = mine.filter { $0.archived == true }
         health = all.filter { $0.isHealth && $0.archived != true && owned($0, by: \.roster.defaultID) }
-    }
-}
-
-/// The sidebar's Directions order (#4331): pinning only orders the group, so an unpinned direction stays one.
-nonisolated enum AssistantDirections {
-    /// `leaders` with the pinned ones first, then the `unpinned` ones, each part in the hub's order.
-    static func order(_ leaders: [String], unpinned: [String]) -> [String] {
-        let off = Set(unpinned)
-        return leaders.filter { !off.contains($0) } + leaders.filter { off.contains($0) }
     }
 }

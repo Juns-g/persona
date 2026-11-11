@@ -167,12 +167,12 @@ class AssistantSwitcherShotsTest {
             val waiting = roster?.waiting(cards, sessions).orEmpty()
             Box(Modifier.testTag("shot").fillMaxSize().background(PersonaTheme.palette.background)) {
                 JSidebarColumn({
-                    AssistantSidebarContent(snapshot, repository, emptySet(), null, operations, demo = false,
+                    AssistantSidebarContent(snapshot, repository, null, operations, demo = false,
                         onOpen = {}, onAction = {}, onSettings = {}, onInbox = {}, onKnowledge = {}, onTodos = {},
                         todoCount = 2, showTodos = true, inboxCount = if (choice.id == "assistant") 12 else 2,
                         settingsCount = 0, settingsDot = false, settingsBadge = null,
                         pages = listOf(NavItem("machines", stringResource(persona.android.R.string.app_machines), PhIcons.Desktop)),
-                        onPage = {}, onTogglePin = {}, onRetired = {},
+                        onPage = {}, onRetired = {},
                         switcher = { head, trailing, fallback ->
                             AssistantSwitcher(fake, waiting, hubOnline = true, onManage = onManage, headModifier = head,
                                 ticking = false, trailing = trailing, fallback = fallback)

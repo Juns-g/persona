@@ -217,6 +217,17 @@ data class ExtensionOperationEvent(val operation: persona.core.contracts.api.Ext
 data class ExtensionAuthEvent(val extension: String, val auth: persona.core.contracts.api.ExtensionAuth, val manager: String? = null) : ServerEvent
 
 /**
+ * The assistant's current leaders with their names and open tasks (`assistant_leaders`, #4331; docs/assistant/unified-entry.md
+ * "Leader conversations"): the hub sends them whenever the leaders, their names or their counts change, so a drawer that is
+ * open follows a leader made or ended on another device at once. [manager] is whose they are, as [pushManager].
+ */
+@KeepGeneratedSerializer
+@Serializable(with = AssistantLeadersEventSerializer::class)
+data class AssistantLeadersEvent(
+    val manager: String? = null, val leaders: List<persona.core.contracts.api.LeaderLine> = emptyList(),
+) : ServerEvent
+
+/**
  * Whose an extension push is (`extension_ui`, `extension_operation`, `extension_auth`): the hub puts a top-level
  * `manager` on every manager's but the assistant's it starts, so none is the assistant's (docs/assistant/managers.md,
  * the same extension id under several managers, #1834).
@@ -279,6 +290,7 @@ object ServerEventSerializer : KSerializer<ServerEvent> {
             "inbox" -> input.json.decodeFromJsonElement<InboxEvent>(obj)
             "todos" -> input.json.decodeFromJsonElement<TodosEvent>(obj)
             "assistant_feed" -> input.json.decodeFromJsonElement<AssistantFeedEvent>(obj)
+            "assistant_leaders" -> input.json.decodeFromJsonElement<AssistantLeadersEvent>(obj)
             "task_plan" -> input.json.decodeFromJsonElement<TaskPlanEvent>(obj)
             "assistant_view" -> input.json.decodeFromJsonElement<AssistantViewEvent>(obj)
             "assistant_view_action" -> input.json.decodeFromJsonElement<AssistantViewActionEvent>(obj)
@@ -333,6 +345,7 @@ object ServerEventSerializer : KSerializer<ServerEvent> {
             is InboxEvent -> "inbox" to output.json.encodeToJsonElement(value)
             is TodosEvent -> "todos" to output.json.encodeToJsonElement(value)
             is AssistantFeedEvent -> "assistant_feed" to output.json.encodeToJsonElement(value)
+            is AssistantLeadersEvent -> "assistant_leaders" to output.json.encodeToJsonElement(value)
             is TaskPlanEvent -> "task_plan" to output.json.encodeToJsonElement(value)
             is AssistantViewEvent -> "assistant_view" to output.json.encodeToJsonElement(value)
             is AssistantViewActionEvent -> "assistant_view_action" to output.json.encodeToJsonElement(value)
@@ -368,3 +381,4 @@ object HubUpdateEventSerializer : WireSerializer<HubUpdateEvent>(HubUpdateEvent.
 object SubscriptionEventSerializer : WireSerializer<SubscriptionEvent>(SubscriptionEvent.generatedSerializer())
 object ExtensionOperationEventSerializer : WireSerializer<ExtensionOperationEvent>(ExtensionOperationEvent.generatedSerializer())
 object ExtensionAuthEventSerializer : WireSerializer<ExtensionAuthEvent>(ExtensionAuthEvent.generatedSerializer())
+object AssistantLeadersEventSerializer : WireSerializer<AssistantLeadersEvent>(AssistantLeadersEvent.generatedSerializer())

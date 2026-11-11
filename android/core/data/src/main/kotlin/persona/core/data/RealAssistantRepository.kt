@@ -1,8 +1,10 @@
 package persona.core.data
 
+import persona.core.contracts.AssistantLeadersEvent
 import persona.core.contracts.CoreText
 import persona.core.contracts.CoreText.Key
 import persona.core.contracts.JsonCodec
+import persona.core.contracts.ServerEvent
 import persona.core.contracts.Session
 import persona.core.contracts.SessionKey
 import persona.core.contracts.api.*
@@ -23,6 +25,7 @@ class RealAssistantRepository(
     scope: CoroutineScope,
     private val snapshots: ListSnapshotStore? = null,
     private val preferences: HubPreferences? = null,
+    events: Flow<ServerEvent> = emptyFlow(),
 ) : AssistantConversations {
     private val current = MutableStateFlow(AssistantSnapshot())
     override val assistant = current.asStateFlow()
@@ -62,15 +65,15 @@ class RealAssistantRepository(
             if (machine.isNotEmpty() && main.isNotEmpty()) SessionKey(machine, main) else null,
             conversations, request.manager, request.owner,
             leaders = leadersOf(data),
-            unpinnedLeaders = unpinnedLeadersOf(data),
         )
     }
 
-    /** The directions' names for [leaders] (none without leaders); a hub that cannot list them keeps [held]. */
-    private suspend fun directionNames(request: Request, leaders: List<String>, held: Map<String, String>): Map<String, String> {
-        if (leaders.isEmpty()) return emptyMap()
+    /** Each current leader's name and open tasks (none without leaders); a hub that cannot list them keeps [held]. */
+    private suspend fun leaderInfo(request: Request, leaders: List<String>, held: LeaderInfo): LeaderInfo {
+        if (leaders.isEmpty()) return LeaderInfo.EMPTY
         return try {
-            directionNamesOf(request.transport.assistantLeadersOf(request.owner))
+            val data = request.transport.assistantLeadersOf(request.owner)
+            LeaderInfo(directionNamesOf(data), leaderCountsOf(data))
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -102,6 +105,20 @@ class RealAssistantRepository(
         if (preferences != null) scope.launch {
             preferences.preferences.collect { state ->
                 currentPins.value = state.pins.sessions.mapNotNull(::sessionPath).toSet()
+            }
+        }
+        // A leader made or ended, renamed, or its open tasks changed: the drawer follows at once, whichever device did it.
+        scope.launch {
+            events.filterIsInstance<AssistantLeadersEvent>().collect { event ->
+                try {
+                    applyLeaders(event)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Logger.getLogger(RealAssistantRepository::class.java.name).log(
+                        Level.WARNING, "Assistant leaders update failed", e,
+                    )
+                }
             }
         }
         scope.launch {
@@ -150,6 +167,33 @@ class RealAssistantRepository(
         }
     }
 
+    /**
+     * `assistant_leaders` (#4331): the current leaders in the hub's order with their names and open tasks, applied as they
+     * come. Another manager's is not this page's. An id no conversation on the page has (a leader made elsewhere, or one
+     * this list has not met) needs the conversations too, so the page refreshes.
+     */
+    private suspend fun applyLeaders(event: AssistantLeadersEvent) {
+        val (request, missing) = lock.withLock {
+            val transport = connection.current.value ?: return
+            val choice = AssistantManagerChoice.current.value
+            if (!choice.owns(event.manager)) return
+            val request = Request(transport, choice)
+            if (restoredScope != request.key || current.value.managerId != request.owner) return
+            val snapshot = current.value
+            val main = snapshot.mainSession?.sessionId
+            val lines = event.leaders.filter { it.id.isNotEmpty() && it.id != main }
+            val known = snapshot.conversations.mapTo(HashSet()) { it.sessionId }
+            current.value = snapshot.copy(
+                leaders = lines.map { it.id },
+                directionNames = lines.mapNotNull { line -> line.name.trim().takeIf(String::isNotEmpty)?.let { line.id to it } }.toMap(),
+                leaderCounts = lines.associate { it.id to it.counts },
+            )
+            cached[request.key] = current.value
+            request to lines.any { it.id !in known }
+        }
+        if (missing) refresh(request)
+    }
+
     override suspend fun refresh() = refresh(request())
 
     private suspend fun refresh(request: Request) {
@@ -160,18 +204,16 @@ class RealAssistantRepository(
         }
         // Network calls never hold the page/cache mutex: a slow manager cannot block switching away.
         val data = request.transport.assistantOf(request.owner)
-        // the names are asked for again only when the leaders or their titles change (as the web does)
+        // Names and counts are asked for on every refresh: a leader's open tasks change without the leaders changing.
         val fresh = decode(data, request)
         val held = current.value.takeIf { it.managerId == request.owner }
-        fun AssistantSnapshot.leaderTitles() = leaders.map { id -> conversations.firstOrNull { it.sessionId == id }?.title }
-        val names = if (held != null && held.directionNames.isNotEmpty() && held.leaders == fresh.leaders &&
-            held.leaderTitles() == fresh.leaderTitles()) held.directionNames
-            else directionNames(request, fresh.leaders, held?.directionNames.orEmpty())
+        val info = leaderInfo(request, fresh.leaders,
+            held?.let { LeaderInfo(it.directionNames, it.leaderCounts) } ?: LeaderInfo.EMPTY)
         val pins = if (preferences != null) preferences.preferences.value.pins.sessions.mapNotNull(::sessionPath).toSet()
             else request.transport.pins().array("sessions").mapNotNull { (it as? JsonPrimitive)?.contentOrNull?.let(::sessionPath) }.toSet()
         lock.withLock {
             if (!selected(request) || version != refreshVersion) return
-            val snapshot = fresh.copy(directionNames = names)
+            val snapshot = fresh.copy(directionNames = info.names, leaderCounts = info.counts)
             cached[request.key] = snapshot
             current.value = snapshot
             currentPins.value = pins
@@ -244,15 +286,25 @@ internal fun leadersOf(data: JsonObject): List<String> {
     return data.array("leaders").mapNotNull { (it as? JsonPrimitive)?.contentOrNull?.takeIf { id -> id.isNotEmpty() && id != main } }
 }
 
-/** `assistant.leaders_unpinned` (#4331): the leaders the owner unpinned. */
-internal fun unpinnedLeadersOf(data: JsonObject): Set<String> =
-    data.array("leaders_unpinned").mapNotNull { (it as? JsonPrimitive)?.contentOrNull?.takeIf(String::isNotEmpty) }.toSet()
-
 /** `GET /api/v1/assistant/leaders`'s names by leader conversation id: current directions with a name only. */
 internal fun directionNamesOf(data: JsonObject): Map<String, String> = data.array("leaders").mapNotNull { it as? JsonObject }
     .filter { (it["ended"] as? JsonPrimitive)?.booleanOrNull != true }
     .mapNotNull { l -> l.string("id").takeIf { it.isNotEmpty() }?.let { id -> l.string("name").trim().takeIf { it.isNotEmpty() }?.let { id to it } } }
     .toMap()
+
+/** `GET /api/v1/assistant/leaders`'s open tasks by leader conversation id (#4331): current directions only. */
+internal fun leaderCountsOf(data: JsonObject): Map<String, LeaderCounts> = data.array("leaders").mapNotNull { it as? JsonObject }
+    .filter { (it["ended"] as? JsonPrimitive)?.booleanOrNull != true }
+    .mapNotNull { l -> l.string("id").takeIf { it.isNotEmpty() }?.let { id -> id to l.counts() } }
+    .toMap()
+
+private fun JsonObject.counts(): LeaderCounts = obj("counts")?.let { LeaderCounts(number("working")?.toInt() ?: 0, number("needs_you")?.toInt() ?: 0) }
+    ?: LeaderCounts()
+
+/** A current leader's name and open tasks, as `GET /api/v1/assistant/leaders` has them. */
+private data class LeaderInfo(val names: Map<String, String>, val counts: Map<String, LeaderCounts>) {
+    companion object { val EMPTY = LeaderInfo(emptyMap(), emptyMap()) }
+}
 
 internal fun JsonObject.string(key: String): String = (this[key] as? JsonPrimitive)?.contentOrNull.orEmpty()
 internal fun JsonObject.optional(key: String): String? = string(key).takeIf { it.isNotEmpty() }

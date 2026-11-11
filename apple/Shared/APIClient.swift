@@ -1107,39 +1107,67 @@ nonisolated struct APIClient: Sendable {
         /// conversations"), in the hub's order; nil when there are none or from an older hub. The sidebar shows them as
         /// the Directions group, under the names `assistantLeaders()` gives.
         var leaders: [String]?
-        /// The leaders the owner unpinned (#4331): still Directions, listed after the pinned ones; nil: all pinned.
-        var leadersUnpinned: [String]?
         enum CodingKeys: String, CodingKey {
             case launcher, cwd, conversations, timezone, main, leaders
-            case leadersUnpinned = "leaders_unpinned"
             case machineID = "machine_id", notes = "notes_effective", mainTasksQuiet = "main_tasks_quiet"
             case meetingAttendanceDefault = "meeting_attendance_default"
         }
     }
     func assistant() async throws -> AssistantState { owned(try await get("/api/v1/assistant")) }
     /// A direction as `GET /api/v1/assistant/leaders` lists it (#3519, #3695): its leader conversation's id and the name
-    /// the hub gives the direction (the name set, else its project's, else the title without its "MMDD | kind | " prefix).
+    /// the hub gives the direction (the name set, else its project's, else the title without its "MMDD | kind | " prefix),
+    /// and how much of its work is in flight (#4331).
     struct LeaderInfo: Codable, Sendable, Equatable {
         var id: String
         var name: String?
         var ended: Bool?
+        /// The conversation's own title; the hub's `assistant_leaders` push carries it too.
+        var title: String? = nil
+        /// What the direction holds right now; nil from a hub that does not count.
+        var counts: LeaderCounts? = nil
     }
-    /// Pins or unpins a direction (#4331, `PUT /api/v1/assistant/directions/{id}/pinned`): the hub keeps it for every
-    /// device, and an unpinned one stays a direction, after the pinned ones.
-    func setDirectionPinned(_ id: String, pinned: Bool) async throws {
-        struct Body: Encodable { var pinned: Bool }
-        _ = try await request("PUT", "/api/v1/assistant/directions/\(id)/pinned", body: Body(pinned: pinned))
+    /// A direction's work at this moment (#4331): what its row reads as "N working · N need you".
+    struct LeaderCounts: Codable, Sendable, Equatable {
+        var working: Int
+        var needsYou: Int
+        enum CodingKeys: String, CodingKey { case working, needsYou = "needs_you" }
+        init(working: Int = 0, needsYou: Int = 0) {
+            self.working = working
+            self.needsYou = needsYou
+        }
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            working = try c.decodeIfPresent(Int.self, forKey: .working) ?? 0
+            needsYou = try c.decodeIfPresent(Int.self, forKey: .needsYou) ?? 0
+        }
     }
-    /// The directions' names by leader conversation id: the current ones with a name (ended ones left out).
-    func directionNames() async throws -> [String: String] {
+    /// Makes a conversation a direction (#4331, `POST /api/v1/assistant/directions/{id}/make`): its work is led from
+    /// there from now on.
+    func makeDirection(_ id: String) async throws {
+        _ = try await request("POST", "/api/v1/assistant/directions/\(id)/make", body: [String: String]())
+    }
+    /// Ends a direction (#4331, `POST /api/v1/assistant/directions/{id}/end`): its tasks keep their supervisor.
+    func endDirection(_ id: String) async throws {
+        _ = try await request("POST", "/api/v1/assistant/directions/\(id)/end")
+    }
+    /// The directions as `GET /api/v1/assistant/leaders` lists them: current ones only (#4331).
+    func leaders() async throws -> [LeaderInfo] {
         struct Body: Decodable { var leaders: [LeaderInfo]? }
         let body = try await get("/api/v1/assistant/leaders", as: Body.self)
-        return Self.directionNames(body.leaders ?? [])
+        return body.leaders ?? []
     }
     static func directionNames(_ list: [LeaderInfo]) -> [String: String] {
         var out: [String: String] = [:]
         for l in list where !(l.ended ?? false) && !l.id.isEmpty {
             if let name = l.name?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty { out[l.id] = name }
+        }
+        return out
+    }
+    /// The directions' counts by leader conversation id: current ones that report counts.
+    static func directionCounts(_ list: [LeaderInfo]) -> [String: LeaderCounts] {
+        var out: [String: LeaderCounts] = [:]
+        for l in list where !(l.ended ?? false) && !l.id.isEmpty {
+            if let counts = l.counts { out[l.id] = counts }
         }
         return out
     }

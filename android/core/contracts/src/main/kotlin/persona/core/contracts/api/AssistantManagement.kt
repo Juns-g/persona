@@ -39,10 +39,16 @@ interface AssistantManagement {
      */
     suspend fun archiveConversation(session: SessionKey): Unit = throw UnsupportedOperationException("Archive unavailable")
     /**
-     * Pins or unpins a direction (PUT /api/v1/assistant/directions/{id}/pinned, #4331): the hub keeps it for every device
-     * (`assistant.leaders_unpinned`); an unpinned direction stays one, after the pinned ones.
+     * Makes a conversation a leader, 常驻 (POST /api/v1/assistant/directions/{id}/make, #4331): the hub keeps it for every
+     * device, and its row comes and goes with the hub's `assistant_leaders`. It refuses the main conversation, a chat
+     * that is already one, and any past the most it allows.
      */
-    suspend fun setDirectionPinned(session: SessionKey, pinned: Boolean): Unit = throw UnsupportedOperationException("Direction pins unavailable")
+    suspend fun makeDirection(session: SessionKey): Unit = throw UnsupportedOperationException("Directions unavailable")
+    /**
+     * Ends a conversation's leadership (POST /api/v1/assistant/directions/{id}/end, #4331): it leaves 常驻; the tasks it
+     * handed out keep their supervisor. The conversation itself stays, an ordinary chat now.
+     */
+    suspend fun endDirection(session: SessionKey): Unit = throw UnsupportedOperationException("Directions unavailable")
     /**
      * Puts the main conversation away for a new one (POST /api/v1/assistant/main/new, hub feature `assistant_main_new`):
      * it is renamed and archived, and the next message to the main conversation starts a new one. [carrySummary] brings
