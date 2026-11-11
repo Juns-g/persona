@@ -1,5 +1,17 @@
 # Lessons: testing and validation
 
+- A test that calls an entry point which sets the process environment must `t.Setenv` that variable first, so the
+  test puts it back (#4581). `nodeclient.RunHook` with `--persona-home <dir>` sets `PERSONA_HOME`; one test left it
+  pointing at its removed `t.TempDir()`, and every later `internal/node` test put `node.sock` there. On macOS that path
+  passed the 104-byte Unix socket limit, so `TestStandbyOnTheSocket` failed with `bind: invalid argument` only in
+  full-package runs, and a test that refuses to dial anything outside its own home skipped silently. Linux's shorter
+  `/tmp` paths still bind: reproduce such leaks on macOS by running the two tests together, in order.
+
+- Async node-start fixtures must cancel and join `n.starts` before closing fake terminal sockets, restoring globals
+  or removing their temporary files (#3345). Waiting only for `pane.send_input` leaves a background start polling a
+  dead host for three minutes, with its diagnostics appearing under a later test. Expected start failures use the
+  node's logger, so tests can capture diagnostics without changing production logging.
+
 - Bulk Postgres fixtures need physical isolation, not just row deletion (#3743). Deleting 500 feed rows left a larger
   unsent B-tree than the sent index; a controlled statistics refresh then changed a later index-choice assertion even
   though no fixture rows remained. Use the existing migrated-database clone for bulk fixtures so table, index and

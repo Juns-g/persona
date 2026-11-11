@@ -167,6 +167,9 @@ func (s *Service) directionsSoon() {
 		s.directionsSync(context.Background())
 		s.tellLeaders(context.Background())                          // the clients' sidebar (direction_counts.go)
 		s.leaderReportsSync(context.Background(), time.Now(), false) // a review just written (leader_reports.go)
+		// A name or a record changed without a publish (setDirectionName, a new leader's project) changes the
+		// direction tree's names too; an unchanged tree is not told again (direction_tree.go).
+		s.directionTreeSoon()
 	}
 	if after != nil {
 		after(directionsSettle, f)
