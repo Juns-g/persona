@@ -130,6 +130,8 @@ type Manager struct {
 	media         mediaCache
 	recalls       recallLocks
 	extensions    *extensions
+	hostCLIMu     sync.Mutex
+	hostCLIState  *hostCLIState
 	extTokens     extTokens
 	legacyCalls   legacyCalls
 	uiPages       pageSessions
