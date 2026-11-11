@@ -90,7 +90,7 @@ final class MeetingAttendanceUITests: XCTestCase {
         try shot(app, "listening")
 
         // Cancel drops the draft and closes the row.
-        let field = openQuestion(app)
+        let (field, largeType) = openQuestion(app)
         field.typeText("草稿")
         let cancel = app.buttons["meeting-ask-cancel"].firstMatch
         XCTAssertTrue(cancel.waitForExistence(timeout: 5), app.debugDescription)
@@ -98,11 +98,12 @@ final class MeetingAttendanceUITests: XCTestCase {
         XCTAssertTrue(waitFor(5) { !field.exists }, "Cancel closes the row")
 
         // Opened again: empty, in the bar, the hint and the timeline in sight, Send waiting for words.
-        let reopened = openQuestion(app)
+        let reopened = openQuestion(app).field
         XCTAssertEqual(app.alerts.count, 0, "no system alert: \(app.debugDescription)")
         XCTAssertFalse((reopened.value as? String ?? "").contains("草稿"), "Cancel dropped what was typed")
-        XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "在屏幕上回答")).firstMatch.exists,
-                      app.debugDescription)
+        // The hint over the field; at accessibility sizes it gives its lines back to the timeline while the keyboard is up.
+        let hint = app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "在屏幕上回答")).firstMatch
+        XCTAssertEqual(hint.exists, !largeType, app.debugDescription)
         XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "上周定的长录音测试谁负责")).firstMatch.exists,
                       "the meeting's lines stay on screen while typing: \(app.debugDescription)")
         let send = app.buttons["meeting-ask-send"].firstMatch
@@ -129,10 +130,10 @@ final class MeetingAttendanceUITests: XCTestCase {
 
         // Return asks too, through the same path; the field is empty again after a send.
         let asked = try meeting(hub).asks(live).count
-        let again = openQuestion(app)
+        let again = openQuestion(app).field
         XCTAssertFalse((again.value as? String ?? "").contains("导出上限"), "the sent question is cleared")
         again.typeText("回归测试谁负责？\n")
-        XCTAssertTrue(waitFor(20) { ((try? self.meeting(hub))?.asks(self.live).count ?? 0) > asked }, "Return asked")
+        XCTAssertTrue(waitFor(20) { ((try? self.meeting(hub))?.asks(self.live).count ?? 0) > asked }, "Return asked: \(again.exists ? String(describing: again.value) : "the row closed")")
         XCTAssertEqual(try meeting(hub).asks(live).last?["question"] as? String, "回归测试谁负责？")
         XCTAssertTrue(waitFor(5) { !again.exists }, "sent with Return: the row closes")
     }
@@ -241,10 +242,11 @@ final class MeetingAttendanceUITests: XCTestCase {
     }
 
     /// Opens the bar's question row (the keyboard button, or More at accessibility sizes) and returns its field, which
-    /// has the keyboard.
-    @MainActor @discardableResult private func openQuestion(_ app: XCUIApplication) -> XCUIElement {
+    /// has the keyboard, and whether the bar is in its accessibility-size layout (Type is in More).
+    @MainActor @discardableResult private func openQuestion(_ app: XCUIApplication) -> (field: XCUIElement, largeType: Bool) {
         let type = app.buttons["meeting-ask-type"].firstMatch
-        if !type.waitForExistence(timeout: 3) {
+        let largeType = !type.waitForExistence(timeout: 3)
+        if largeType {
             let more = app.buttons["recording-more"].firstMatch
             XCTAssertTrue(more.waitForExistence(timeout: 10), app.debugDescription)
             more.tap()
@@ -255,7 +257,7 @@ final class MeetingAttendanceUITests: XCTestCase {
         let field = app.descendants(matching: .any)["meeting-ask-field"].firstMatch
         XCTAssertTrue(field.waitForExistence(timeout: 10), app.debugDescription)
         XCTAssertTrue(waitFor(5) { app.keyboards.count > 0 || (field.value(forKey: "hasKeyboardFocus") as? Bool) == true }, "the field has the keyboard")
-        return field
+        return (field, largeType)
     }
 
     /// The role menu's picked value: its label and value, whichever the menu puts it in.

@@ -159,11 +159,15 @@ struct RecordingLiveBar: View {
     /// Cancel and send under it.
     private var questionRow: some View {
         VStack(alignment: .leading, spacing: Theme.Space.xs) {
-            Text(questionHint)
-                .font(Theme.Font.caption).foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .accessibilityIdentifier("meeting-ask-hint")
+            // At accessibility sizes the hint is several lines: while the keyboard is up it gives the room back to the
+            // timeline (the field's spoken hint keeps it).
+            if !(size.isAccessibilitySize && questionFocused) {
+                Text(questionHint)
+                    .font(Theme.Font.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityIdentifier("meeting-ask-hint")
+            }
             if size.isAccessibilitySize {
                 questionField
                 HStack(spacing: Theme.Space.m) {
@@ -187,7 +191,7 @@ struct RecordingLiveBar: View {
     private var questionField: some View {
         TextField(String(localized: "Ask about this meeting"), text: $question, axis: .vertical)
             .font(Theme.Font.body)
-            .lineLimit(1...Theme.Recording.askLines)
+            .lineLimit(1...(size.isAccessibilitySize ? Theme.Recording.askLinesLargeType : Theme.Recording.askLines))
             .focused($questionFocused)
             .submitLabel(.send)
             .onSubmit { send() }
@@ -204,6 +208,7 @@ struct RecordingLiveBar: View {
             .modifier(ComposerSurface())
             .contentShape(.rect(cornerRadius: Theme.Shell.composerRadius))
             .onTapGesture { questionFocused = true }
+            .accessibilityHint(size.isAccessibilitySize ? Text(questionHint) : Text(verbatim: ""))
             .accessibilityIdentifier("meeting-ask-field")
             // Opened by the keyboard button or More: the keyboard comes up with it.
             .onAppear { questionFocused = true }
