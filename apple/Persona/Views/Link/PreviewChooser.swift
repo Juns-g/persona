@@ -184,7 +184,7 @@ struct PreviewChooser: View {
     private func detail(_ o: PreviewOption, starting: Bool) -> String {
         if starting { return String(localized: "Starting \(o.name)… waiting for something to answer on port \(String(o.port)).") }
         let at = ":\(o.port)" + (o.path == "/" ? "" : o.path)
-        let what = o.listening ? (o.from == .agent ? o.process : o.title.flatMap { $0 == o.name ? nil : $0 }) : String(localized: "Not running")
+        let what = o.listening ? (o.from == .agent ? o.process : o.title.flatMap { $0 == o.name ? nil : $0 }) : StateName.notRunning.text
         return what.map { "\(at) · \($0)" } ?? at
     }
 

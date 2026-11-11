@@ -41,7 +41,12 @@ final class PreviewUITests: XCTestCase {
     }
 
     @MainActor private func openServers(_ app: XCUIApplication, shoot: Bool = false) {
+        // The header folds by itself at the newest message; its slim bar has no ⋯ (a tap there opens it again).
         let more = app.buttons.matching(NSPredicate(format: "label == %@", "更多")).firstMatch
+        if !more.waitForExistence(timeout: 5) || !more.isHittable {
+            let compact = app.buttons["chat.compactTitle"].firstMatch
+            if compact.exists && compact.isHittable { compact.tap(); sleep(1) }
+        }
         see(more, "no ⋯", app)
         more.tap()
         let item = app.buttons["预览"].firstMatch
@@ -53,7 +58,8 @@ final class PreviewUITests: XCTestCase {
     @MainActor func testPreviewPickAnElementAndStartAServer() throws {
         let app = XCUIApplication()
         let pair = "persona://pair?url=" + hub.addingPercentEncoding(withAllowedCharacters: .alphanumerics)! + "&token=mock"
-        app.launchArguments = ["-pairURL", pair, "-tab", "dev", "-openSession", "macbook/" + widget, "-openChatsFresh", "YES"]
+        app.launchArguments = ["-pairURL", pair, "-tab", "dev", "-openSession", "macbook/" + widget, "-openChatsFresh", "YES",
+                              "-holdChromeOpen", "YES"] // ⋯ is in the header, which must not fold by itself
         app.launchPinned()
 
         // The servers: launch.json's first, the Agent's Storybook port after, the broken entry said why.

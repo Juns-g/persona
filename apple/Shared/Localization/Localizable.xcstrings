@@ -80893,28 +80893,6 @@
       },
       "extractionState" : "manual"
     },
-    "Not running" : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Not running"
-          }
-        },
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "停止中"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "没在运行"
-          }
-        }
-      }
-    },
     "Not running; starts when needed" : {
       "localizations" : {
         "en" : {
