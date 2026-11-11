@@ -113,9 +113,10 @@ final class ReviewPageTests: XCTestCase {
         item.tap()
     }
 
-    /// A tap on a line's numbers (its gutter, at the row's left edge).
+    /// A tap on a line's numbers (its gutter, at the row's left edge), near the row's top: at the largest text sizes the
+    /// code wraps to several lines below them.
     @MainActor private func gutter(_ row: XCUIElement) {
-        row.coordinate(withNormalizedOffset: CGVector(dx: 0.04, dy: 0.5)).tap()
+        row.coordinate(withNormalizedOffset: CGVector(dx: 0.04, dy: 0)).withOffset(CGVector(dx: 0, dy: min(row.frame.height / 2, 14))).tap()
     }
 
     @MainActor private func launch(scheme: String = "light", size: String? = nil) -> XCUIApplication {
