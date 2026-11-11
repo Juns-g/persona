@@ -1,6 +1,6 @@
 # Source subscriptions
 
-Source subscriptions let the manager pull new information from a connector's read-only tools into the Inbox or knowledge base. The design is tracked in #2036. The optional catalog protocol (#2037), the manager's storage, validation, scheduler, runner and API (#2038), delivery to the Inbox and the knowledge base (#2039) and drafting a recipe with a model (#2040) are implemented; client pages (#2041) are a follow-up stage. A catalog alone does not turn on polling or store source content.
+Source subscriptions let the manager pull new information from a connector's read-only tools into the Inbox or knowledge base. The design is tracked in #2036. The optional catalog protocol (#2037), the manager's storage, validation, scheduler, runner and API (#2038), delivery to the Inbox and the knowledge base (#2039) and drafting a recipe with a model (#2040) and the pages (#2041, "Pages") are implemented. A catalog alone does not turn on polling or store source content.
 
 ## Source catalog
 
@@ -23,6 +23,21 @@ The Go SDK's `wire.CheckConnectorCatalogJSON` validates the original wire result
 ## Existing connectors
 
 Without `catalog`, `connector.ReadCatalog` derives one source from the connector's declared `ReadTools`: its id and name are the connector's, and a tool's `<connector id>_` prefix is removed from the short name. `connector.CallCatalog` calls the existing read tool with its full name through `tools.call`. It never falls back to `actions.do`. A name present in both the read and write lists is refused.
+
+A built-in connector of this kind can also implement `connector.ReadJSON` (found by type assertion, declaring nothing). `CallCatalog` then asks `CallJSON` first, so subscriptions and recipe drafting get a JSON answer they can follow item by item, while the models keep the text `tools.call` gives them. A tool without a JSON answer still answers text. The built-in ones answer an object with one top-level list, so `items_path` can be left empty. Each item carries the names the setup form's pickers guess (`id`, `title`, `time` in RFC 3339, `sender` or `author`, `body`, `link`, `thread` where the source has one). The summary line becomes fields (`total`, `more`, paging cursors):
+
+| Connector | Tool | List | Item id |
+| --- | --- | --- | --- |
+| `github` | `search` | `items`: issues and pull requests (`kind: "code"`: files) | `owner/name#number` (code: `owner/name:path`) |
+| `github` | `read` | `comments`: the newest comments and reviews, beside `issue` and `pull` | `comment:<id>`, `review:<id>`; `thread` is the issue's id |
+| `github` | `diff` | `files` (with `path`: that file and its patch, no list) | the path |
+| `github` | `checks` | `checks`: the check runs, a failed Actions job's log end as `body` | the run's id |
+| `imessage` | `chats` | `chats`: one item per chat's latest message | the chat's id and that message's time; `thread` is the chat |
+| `imessage` | `read`, `search` | `messages`, `hits` | the message's id; `thread` is the chat |
+| `mail` | `accounts` | `accounts` | the account's id |
+| `mail` | `search` | `messages` | the Message-ID, else `account:mailbox:uid` |
+
+`mail` `read` stays text: one message has no list to follow. The answers are pinned in each connector's `testdata/readjson`, and `server/internal/subscriptions/builtin_test.go` dry-runs them item by item. A snapshot subscription already made on one of these tools keeps working; its state is now the JSON.
 
 An absent or undeclared catalog does not expose an implementation merely because it has a similarly named method. Existing Inbox/archive capabilities, feed switches, and `poll_seconds` keep their meaning. An older hub filters the unknown `catalog` capability at extension registration and keeps the connector's other capabilities; it can still use its ordinary tools.
 
@@ -174,11 +189,18 @@ is 403 `read_only_device`.
 | `runs`, `interval`, `fallback`, `rules`, `raw` | The last runs; pickers that apply at once (the page stays and the choice moves); triage rules; the recipe's JSON |
 
 - A switch that is off carries the confirmation of what turning it on does: what is pulled, how often, that it is kept on the hub,
-  and which model triages or summarizes it. Turning one off asks nothing.
+  and which model triages or summarizes it, with its connection's name (`Service.ModelOf`). Turning one off asks nothing.
+- With drafting in (`features.generate`, "Drafting with a model"), a source without its extension's own recipe offers Draft with
+  AI next to Choose a Tool, and a recipe page offers Regenerate. Each asks first what goes to which model (`Service.RecipeModel`);
+  without one it only says so. A draft takes up to four minutes, so the page starts it in the background (one at a time per
+  connector) and shows it running; when it finishes the manager sends `extension_ui` `{extension: "-subscriptions", invalidate}`,
+  which redraws the pages on every app (`refresh_after` 30 is the fallback). A source's draft opens in the setup form and is saved
+  as the model's when kept unchanged; a refused one opens there too, from as far as it got. Drafts live in the manager's memory:
+  after a restart the user presses again.
 - All text is the manager's, in the request's language (en, zh-Hans, ja); the service gives only codes, localized here.
 - An app below UI version 6 gets the hub's usual downgrade (a switch becomes a row that turns it on or off); a source icon only
   version 6 has is drawn as an older one, never as none.
 
 ## Follow-up behavior
 
-Both destination switches start off. Enabling a destination requires a full-access device and confirmation of what is pulled, how often, where it is stored, and which model triages it (the pages, #2041). Model recipe drafting separately requires consent before a trimmed sample is sent to the Information processing model; the pages will ask for it (their drafting entry comes with #2041's follow-up; the API does not), naming the connection the purpose `subscription.recipe` runs on: `Service.RecipeModel` (`{ok, provider, model}`, from the assistant's `models.usable`; `ok` false means drafting would answer `no_model`). `Service.ModelOf` answers the same for `kb` and `inbox.triage`, which the destinations' consent names. The sample is never stored. Destination storage, deletion, status pages and scheduling are not enabled by the catalog capability itself.
+Both destination switches start off. Enabling a destination requires a full-access device and confirmation of what is pulled, how often, where it is stored, and which model triages it (the pages, #2041). Model recipe drafting separately requires consent before a trimmed sample is sent to the Information processing model; the pages ask for it before drafting (the API does not; "Pages"), naming the connection the purpose `subscription.recipe` runs on: `Service.RecipeModel` (`{ok, provider, model}`, from the assistant's `models.usable`; `ok` false means drafting would answer `no_model`). `Service.ModelOf` answers the same for `kb` and `inbox.triage`, which the destinations' consent names. The sample is never stored. Destination storage, deletion, status pages and scheduling are not enabled by the catalog capability itself.

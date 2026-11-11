@@ -2,7 +2,7 @@
 // task cards that follow their agents, the hub's lines (answered, receipt, routed), the "Today" card, message cards about
 // a task, quick results, the dock above the composer, the tasks' questions, the route chip, and a task's detail in the
 // side panel.
-import { memo, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
+import { lazy, memo, Suspense, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { taskMeter, type TaskCardMetadata } from "../../lib/task-cards";
 import { assistantEntries, type NeedsYouItem } from "../../lib/assistant-entries";
 import { useRestoredTodos } from "../../lib/todo-restore";
@@ -12,20 +12,20 @@ import {
   cardSent,
   dayLabel,
   dismissPlan,
-  draftPlaceholder,
   field,
   feedNotice,
   getFeedState,
   receiptState,
+  interruptLook,
+  type InterruptBatch,
+  type InterruptResolution,
   isToday,
   sentByPersona,
-  later,
   planEditsToSend,
   planUltracodeToSend,
   removeTask,
   retryKey,
   retryTask,
-  sendMessage,
   startFailure,
   setRoute,
   startPlan,
@@ -39,7 +39,7 @@ import {
 } from "../../lib/feed";
 import { backgroundWorkLine, type BackgroundWork } from "../../lib/background-work";
 import { runningWorkflows, workflowCounts, workflowLine } from "../../lib/workflows";
-import { dockAgents, type DockAgent, interruption, isRemovable, mostUrgentAgent, openAsk, orphanedLine, runningSubagents, stoppedReason, taskNow, todoStatus, TODO_STATUS_INFO, waitingLine, type SessionLookup, type Todo, type TodoStatus } from "../../lib/todos";
+import { askOptions, dockAgents, type DockAgent, interruption, isRemovable, mostUrgentAgent, openAsk, orphanedLine, runningSubagents, stoppedReason, taskNow, todoStatus, TODO_STATUS_INFO, waitingLine, type SessionLookup, type Todo, type TodoStatus } from "../../lib/todos";
 import { TodoAskLine } from "../TodoAsk";
 import { usageLimitContinues, usageLimitLabel } from "../../lib/usage-limit";
 import { parseAPIError } from "../../lib/api-errors";
@@ -58,12 +58,15 @@ import { useClamped } from "../../ui/use-clamped";
 import { Icon, type IconName } from "../../ui/icons";
 import { ReportLine, ReviewBadge, ReviewLine } from "./Supervision";
 import { AcceptRow, BriefCard } from "./Brief";
+
+// A decision's row comes with the tray's first decision, not with the first screen (startup-preload's budget).
+const DecisionRow = lazy(() => import("./DecisionRow").then((m) => ({ default: m.DecisionRow })));
 import { SentLine, TaskSentList } from "./Sent";
 import { latestReview, progressLine } from "../../lib/supervision";
 import { planLabel, planLine, planShown } from "../../lib/plan";
 import { AnsweredCard, InteractionCard } from "../chat/Interactions";
 import { MessageActions } from "../chat/MessageActions";
-import { clock, sessionTitle, stateOf } from "../../lib/format";
+import { sessionTitle, stateOf } from "../../lib/format";
 import { formatDate, t } from "../../i18n";
 import { interactionAsk } from "../../lib/inbox";
 import { answeredLookup, answeredSessions } from "./answered-lookup";
@@ -638,7 +641,7 @@ export function TaskLine({ todoId }: { todoId: string }) {
 // changes (mergeInto); the plan, todo and "Later" it shows come through its own selectors.
 export const FeedLineView = memo(function FeedLineView({ item, simplified = false }: { item: FeedItem; simplified?: boolean }) {
   const plan = useFeed((s) => (item.kind === "plan" && item.ref ? s.plans[item.ref] : undefined));
-  const isLater = useFeed((s) => (item.ref ? s.later[item.ref] : false));
+  const isLater = useFeed((s) => !!s.later[item.id]);
   const title = useStore((s) => s.todos.find((todo) => todo.id === item.ref)?.title) ?? t("assistant-tasks.task_fallback");
   const known = useStore((s) => s.todos.some((t) => t.id === item.ref));
   const planned = useFeed((s) => item.kind === "task" && Object.values(s.plans).some((p) => p.conversation === item.conversation && p.tasks.some((task) => task.todo_id === item.ref)));
@@ -646,6 +649,8 @@ export const FeedLineView = memo(function FeedLineView({ item, simplified = fals
     // the dispatched tasks themselves, each opening its own task (its Agent's chat), never the whole In progress tray (#3700)
     if (item.kind === "plan") return plan?.state === "started" ? <DispatchHint tasks={plan.tasks.map((task) => ({ todo: task.todo_id, title: task.title }))} /> : null;
     if (item.kind === "task") return planned ? null : <DispatchHint tasks={[{ todo: item.ref, title }]} />;
+    // an interrupted receipt the hub worked out stays as its record (#3834): one card for a batch, a grey line once handled
+    if (item.kind === "receipt" && interruptLook(item)) return <ReceiptCard item={item} />;
     if (item.kind === "review" || item.kind === "receipt" || item.kind === "report") return null;
     if (item.kind === "message" && !cardSent(item) && !cardFiled(item)) return null;
   }
@@ -744,8 +749,88 @@ export function AnsweredLine({ item, title, onOpenTask }: { item: FeedItem; titl
 
 function ReceiptCard({ item }: { item: FeedItem }) {
   const state = receiptState(item);
+  const look = interruptLook(item);
+  if (look?.kind === "hidden") return null;
+  if (look?.kind === "batch") return <InterruptBatchCard batch={look.batch} />;
+  if (look?.kind === "resolved") return <InterruptHandledLine todoId={item.ref} title={field(item, "title") ?? t("assistant-tasks.task_fallback")} resolution={look.resolution} />;
   if (state === "interrupted") return <InterruptedReceipt item={item} />;
   return <OutcomeReceipt item={item} failed={state === "failed"} />;
+}
+
+/** The words for how an interrupted task was dealt with, as the hub said (#3834). */
+function resolutionLabel(r: InterruptResolution): string {
+  return t(`assistant-tasks.interrupt_resolution_${r}`);
+}
+
+/** The words for what cut a batch off (the hub's `cause`; one it doesn't know reads as a model service error). */
+function causeLabel(cause: string): string {
+  const known = ["model_error", "rate_limited", "auth", "model_route", "no_output"];
+  return t(`assistant-tasks.interrupt_cause_${known.includes(cause) ? cause : "model_error"}`);
+}
+
+/** An interrupted task that was dealt with since (#3834): a grey line, its result in words; it opens the task. */
+function InterruptHandledLine({ todoId, title, resolution }: { todoId?: string; title: string; resolution: Exclude<InterruptResolution, "pending"> }) {
+  const known = useStore((s) => s.todos.some((x) => x.id === todoId));
+  const text = t("assistant-tasks.interrupt_handled", { title, result: resolutionLabel(resolution) });
+  const body = (
+    <>
+      <Icon name="info" size={13} className="shrink-0" />
+      <span className="min-w-0 truncate">{text}</span>
+    </>
+  );
+  return known && todoId ? (
+    <button type="button" data-interrupt="handled" onClick={() => openTask(todoId)} className="flex max-w-full items-center gap-1.5 self-start text-left text-[13px] text-ink-2 hover:text-ink">
+      {body}
+    </button>
+  ) : (
+    <div data-interrupt="handled" className="flex max-w-full items-center gap-1.5 self-start text-[13px] text-ink-2">{body}</div>
+  );
+}
+
+/** Several tasks one outage cut off (#3834): one card, its cause, how many are handled and how many still pending; it
+ *  opens to each task and its result. Red only while one is pending. */
+export function InterruptBatchCard({ batch }: { batch: InterruptBatch }) {
+  const [open, setOpen] = useState(false);
+  const todos = useStore((s) => s.todos);
+  const pending = batch.pending > 0;
+  const cause = causeLabel(batch.cause);
+  const title = batch.machine
+    ? t("assistant-tasks.interrupt_batch_title_on", { machine: batch.machine, cause, count: batch.total })
+    : t("assistant-tasks.interrupt_batch_title", { cause, count: batch.total });
+  const counts = pending ? t("assistant-tasks.interrupt_batch_counts", { resolved: batch.resolved, pending: batch.pending }) : t("assistant-tasks.interrupt_batch_all");
+  return (
+    <div data-interrupt="batch" data-pending={pending || undefined} className={cx("flex flex-col rounded-card", pending ? "bg-red-tint" : "bg-field")}>
+      <button type="button" aria-expanded={open} onClick={() => setOpen(!open)} className="flex items-start gap-3 p-4 text-left">
+        <Icon name="info" size={18} stroke={2.4} className={cx("shrink-0", pending ? "text-red" : "text-ink-3")} />
+        <div className="flex min-w-0 flex-1 flex-col gap-1">
+          <div className={cx("text-[14.5px] font-semibold", !pending && "text-ink-2")}>{title}</div>
+          <div className="text-[13px] text-ink-2">{counts}</div>
+        </div>
+        <Icon name="chevronRight" size={14} stroke={2.2} className="mt-1 shrink-0 text-ink-3 transition-transform duration-200" style={{ transform: open ? "rotate(90deg)" : "none" }} />
+      </button>
+      <Collapse open={open} lazy>
+        <div className="flex flex-col gap-0.5 px-3 pb-3" data-testid="interrupt-batch-tasks">
+          {batch.tasks.map((task) => {
+            const known = todos.find((x) => x.id === task.todo_id);
+            const waiting = task.resolution === "pending";
+            return (
+              <button
+                key={task.receipt}
+                type="button"
+                disabled={!known}
+                onClick={() => known && openTask(known.id)}
+                className="flex min-w-0 items-center gap-2 rounded-control px-2 py-1.5 text-left text-[13px] enabled:hover:bg-hover"
+              >
+                <span className="min-w-0 flex-1 truncate">{known?.title || task.title}</span>
+                <span className={cx("shrink-0 whitespace-nowrap", waiting ? "font-medium text-red" : "text-ink-2")}>{resolutionLabel(task.resolution)}</span>
+                {known && <Icon name="chevronRight" size={12} className="shrink-0 text-ink-3" />}
+              </button>
+            );
+          })}
+        </div>
+      </Collapse>
+    </div>
+  );
 }
 
 /** A task the model service cut off (#1516): red, why in words, "Continue" while it is still cut off; once its agent went on,
@@ -1035,75 +1120,11 @@ function useSayToPersona(conversation: string) {
 
 // ── message cards ──
 
+const LazyMessageDraft = lazy(() => import("./MessageDraft"));
+export const draftTasks = { useTodo, useTaskNow, progressOf, TaskMark, openTask };
+
 function MessageCard({ item }: { item: FeedItem }) {
-  const todo = useTodo(field(item, "todo_id"));
-  const now = useTaskNow(todo);
-  const sent = cardSent(item);
-  // handled without a reply from here: nothing left to edit or send
-  const filed = cardFiled(item);
-  const busy = useFeed((s) => !!s.busy[item.id]);
-  const [text, setText] = useState<string | null>(null);
-  const headingId = useId();
-  const draft = text ?? field(item, "draft") ?? "";
-  const blank = sent || filed ? undefined : draftPlaceholder(draft);
-  const send = async () => {
-    try {
-      await sendMessage(item, draft);
-      toast(t("assistant-tasks.sent_done"), "ok");
-    } catch (e) {
-      toast(t("assistant-tasks.send_failed", { error: String(e instanceof Error ? e.message : e) }), "error");
-    }
-  };
-  const status = now?.status;
-  return (
-    <div className="flex flex-col gap-2.5 rounded-card bg-surface p-4 shadow-card" data-testid="message-card">
-      <div className="flex items-center gap-1.5 text-[12px] font-medium text-ink-2">
-        <Icon name={field(item, "source") === "mail" ? "mail" : "chat"} size={13} className="text-accent" />
-        {[field(item, "sender"), field(item, "chat")].filter(Boolean).join(" · ")}
-      </div>
-      <div className="border-l-[3px] border-accent pl-3 text-[14.5px]">{field(item, "text")}</div>
-      {todo && status && (
-        <button type="button" onClick={() => openTask(todo.id)} className="flex items-center gap-2 rounded-control bg-field px-3 py-2 text-left text-[12.5px] hover:bg-hover">
-          <TaskMark status={status} />
-          <span className="font-semibold">{todo.title}</span>
-          <span className="min-w-0 flex-1 truncate text-ink-2">{progressOf(now?.lead)?.text || TODO_STATUS_INFO[status].label}</span>
-          <Icon name="chevronRight" size={13} className="text-ink-3" />
-        </button>
-      )}
-      {/* handled elsewhere: no longer a draft waiting on you, so not drawn like one (#5095) */}
-      <div className={cx("flex flex-col gap-1 rounded-control p-3", sent ? "bg-green-tint" : filed ? "bg-field" : "bg-accent-tint")}>
-        <span id={headingId} className={cx("flex items-center gap-1 text-[12px] font-semibold", sent ? "text-green" : filed ? "text-ink-2" : "text-accent")}>
-          <Icon name={sent ? "check" : filed ? "archive" : "pencil"} size={12} />
-          {sent ? t("assistant-tasks.replied_as_you") : filed ? t("assistant-tasks.filed_title") : t("assistant-tasks.draft_from_progress")}
-          {sent && <span className="ml-auto font-normal text-ink-3">{clock(sent.at)}</span>}
-        </span>
-        {!sent && !filed ? (
-          // Named by the visible heading above it; the global focus ring covers only buttons and links, so it draws its own.
-          <textarea
-            value={draft}
-            onChange={(e) => setText(e.target.value)}
-            aria-labelledby={headingId}
-            rows={Math.min(6, Math.max(2, draft.split("\n").length))}
-            className="-mx-1.5 resize-none rounded-control bg-transparent px-1.5 text-[14.5px] outline-none focus-visible:ring-2 focus-visible:ring-accent"
-          />
-        ) : (
-          <div className="whitespace-pre-line text-[14.5px]">{sent ? sent.text : draft}</div>
-        )}
-      </div>
-      {blank && <div className="text-[12px] text-red">{t("assistant-tasks.draft_blank", { blank })}</div>}
-      {filed && <div className="text-[12px] text-ink-2">{t("assistant-tasks.filed_not_sent")}</div>}
-      {!sent && !filed && (
-        <div className="flex gap-2">
-          <Button tone="accent" busy={busy} disabled={!!blank || !draft.trim()} onClick={send} className="flex-1">
-            {t("assistant-tasks.send")}
-          </Button>
-          <Button disabled={busy} onClick={() => later(item.ref!)}>
-            {t("assistant-tasks.later")}
-          </Button>
-        </div>
-      )}
-    </div>
-  );
+  return <Suspense fallback={null}><LazyMessageDraft item={item} tasks={draftTasks} /></Suspense>;
 }
 
 // ── above the composer ──
@@ -1327,7 +1348,15 @@ function NeedsYouRow({ item }: { item: NeedsYouItem }) {
   const { todo, asks, status } = item;
   if (asks.length) return <div data-needs-row={item.key}><button type="button" onClick={() => openTask(todo.id)} className="block max-w-full truncate px-1 text-left text-sm font-semibold hover:underline">{todo.title}</button>{asks.map((ix) => <InteractionCard key={ix.id} ix={ix} />)}</div>;
   const ask = openAsk(todo);
-  if (ask) return <div data-needs-row={item.key}><AcceptRow stacked key={todo.id + ask.asked_at} row={{ id: todo.id, title: todo.title, waited_s: Math.max(0, (Date.now() - Date.parse(ask.asked_at)) / 1000), ...ask }} /></div>;
+  // a decision with its options is answered on the row (#3804); any other ask keeps its one button
+  if (ask && askOptions(ask).length)
+    return (
+      // until its code is here: the row's surface with the task's title, so the tray does not jump
+      <Suspense fallback={<div data-needs-row={item.key} className="truncate rounded-control bg-field px-3 py-2.5 text-[12px] text-ink-2">{todo.title}</div>}>
+        <DecisionRow key={todo.id + ask.asked_at} rowKey={item.key} todo={todo} ask={ask} />
+      </Suspense>
+    );
+  if (ask) return <div data-needs-row={item.key}><AcceptRow stacked key={todo.id + ask.asked_at} row={{ id: todo.id, title: todo.title, waited_s: Math.max(0, (Date.now() - Date.parse(ask.asked_at)) / 1000), outcome: ask.outcome, verdict: ask.verdict, recommend: ask.recommend, asked_at: ask.asked_at }} /></div>;
   return <button type="button" data-needs-row={item.key} onClick={() => openTask(todo.id)} className="flex items-center gap-2 rounded-control bg-field px-3 py-2 text-left text-sm"><Icon name="hand" className="shrink-0 text-attention" /><span className="min-w-0 flex-1 truncate">{todo.title}</span><span className="shrink-0 text-xs text-ink-2">{waitsLabel(todo, status)}</span></button>;
 }
 
