@@ -115,7 +115,7 @@ struct ScreenReview: View {
     @ViewBuilder private func previous(wide: Bool) -> some View {
         if let back {
             Button { back() } label: {
-                Text("Previous [Interaction Views 39b1c2]").lineLimit(1).frame(maxWidth: wide ? .infinity : nil)
+                Text("Previous [Interaction Views 39b1c2]").lineLimit(1).minimumScaleFactor(0.8).frame(maxWidth: wide ? .infinity : nil)
             }
             .themedButton()
             .accessibilityIdentifier("screen-review-back")
@@ -128,7 +128,7 @@ struct ScreenReview: View {
                 HStack(spacing: Theme.Space.sm) {
                     if sending == "walk" { ProgressView().controlSize(.small).tint(.white) }
                     Text(missing.label.isEmpty ? String(localized: "Answer Question \(missing.index + 1)") : String(localized: "Answer “\(missing.label)”"))
-                        .lineLimit(1)
+                        .lineLimit(1).minimumScaleFactor(0.8)
                 }
                 .padding(.horizontal, Theme.Space.s)
                 .frame(maxWidth: wide ? .infinity : nil)
@@ -139,7 +139,7 @@ struct ScreenReview: View {
             Button { submit() } label: {
                 HStack(spacing: Theme.Space.sm) {
                     if sending == "submit" { ProgressView().controlSize(.small).tint(.white) }
-                    Text("Submit \(rows.count) Answers").lineLimit(1)
+                    Text("Submit \(rows.count) Answers").lineLimit(1).minimumScaleFactor(0.8)
                 }
                 .padding(.horizontal, Theme.Space.s)
                 .frame(maxWidth: wide ? .infinity : nil)
@@ -152,7 +152,7 @@ struct ScreenReview: View {
     /// A text button, with a finger's room around its words.
     private var withoutThem: some View {
         Button { submit() } label: {
-            Text("Submit Without Them").lineLimit(1)
+            Text("Submit Without Them").lineLimit(1).minimumScaleFactor(0.8)
                 .scaledFrame(minHeight: Theme.Size.tapTarget)
                 .contentShape(.rect)
         }

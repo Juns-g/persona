@@ -195,7 +195,7 @@ class ScreenStepsCardTests: XCTestCase {
     }
 }
 
-/// The same in BeautifulUI, whose card differs (its own Next on a question gone back to, no step capsules), so a run in
+/// The same in BeautifulUI, whose card is its own (its own capsules, and Next on a question gone back to), so a run in
 /// the default style covers both.
 final class ScreenStepsCardBeautifulTests: ScreenStepsCardTests {
     override var style: String { "beautiful" }

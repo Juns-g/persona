@@ -16,6 +16,10 @@ final class CodexCardsTests: XCTestCase {
     }
 
     private func shot(_ name: String) {
+        // A launch in another style changes the app's icon, and the system says so in an alert over the card: OK.
+        let ok = XCUIApplication(bundleIdentifier: "com.apple.springboard").alerts.buttons
+            .matching(NSPredicate(format: "label IN %@", ["OK", "好", "Allow", "允许"])).firstMatch
+        if ok.waitForExistence(timeout: 1) { ok.tap() }
         let png = XCUIScreen.main.screenshot()
         let a = XCTAttachment(screenshot: png)
         a.name = name

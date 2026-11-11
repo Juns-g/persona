@@ -952,27 +952,43 @@ struct ScreenForm: View {
             } else {
                 question(d, stepping: stepping, step: step, moving: moving)
             }
-            HStack(spacing: Theme.Space.l) {
-                if let chat = d.options.first(where: { $0.kind == .chat }) {
-                    Button { send(chat.key, answer(chat)) } label: {
-                        Label("Reply in Chat Instead", systemImage: "bubble.left").lineLimit(1)
-                    }
+            // A row; at the largest text sizes, where it has no room, one under another, each still on one line.
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: Theme.Space.l) {
+                    otherWays(d, stepping: stepping)
+                    Spacer(minLength: 0)
+                    viewTerminal
                 }
-                if stepping, d.review, holding == nil, let cancel = d.options.dropFirst().first {
-                    Button { send(cancel.key, answer(cancel)) } label: { Text("Cancel").lineLimit(1) }
-                        .accessibilityIdentifier("screen-review-cancel")
+                VStack(alignment: .leading, spacing: Theme.Space.s) {
+                    otherWays(d, stepping: stepping)
+                    viewTerminal
                 }
-                Spacer(minLength: 0)
-                // The whole live terminal of that session, the one Terminal opens in its chat (#563): its keys, its scrolling.
-                Button { Haptics.tap(); showTerminal = true } label: {
-                    Label("View Terminal", systemImage: Theme.Icon.terminal).lineLimit(1)
-                }
-                .accessibilityIdentifier("screen-card-terminal")
             }
             .font(Theme.Font.captionMedium)
             .buttonStyle(.plain)
             .foregroundStyle(Theme.accent)
         }
+    }
+
+    /// Answering some other way: in the chat, or (on the review) Cancel.
+    @ViewBuilder private func otherWays(_ d: ScreenParser.Dialog, stepping: Bool) -> some View {
+        if let chat = d.options.first(where: { $0.kind == .chat }) {
+            Button { send(chat.key, answer(chat)) } label: {
+                Label("Reply in Chat Instead", systemImage: "bubble.left").lineLimit(1).minimumScaleFactor(0.8)
+            }
+        }
+        if stepping, d.review, holding == nil, let cancel = d.options.dropFirst().first {
+            Button { send(cancel.key, answer(cancel)) } label: { Text("Cancel").lineLimit(1).minimumScaleFactor(0.8) }
+                .accessibilityIdentifier("screen-review-cancel")
+        }
+    }
+
+    /// The whole live terminal of that session, the one Terminal opens in its chat (#563): its keys, its scrolling.
+    private var viewTerminal: some View {
+        Button { Haptics.tap(); showTerminal = true } label: {
+            Label("View Terminal", systemImage: Theme.Icon.terminal).lineLimit(1).minimumScaleFactor(0.8)
+        }
+        .accessibilityIdentifier("screen-card-terminal")
     }
 
     /// The question: its options, then Next (a multi-select one's Submit) and Previous.
@@ -1891,26 +1907,42 @@ struct BUIScreenForm: View {
     }
 
     private func bottomRow(_ d: ScreenParser.Dialog, stepping: Bool) -> some View {
-            HStack(spacing: Theme.Space.l) {
-                if let chat = d.options.first(where: { $0.kind == .chat }) {
-                    Button { send(chat.key, answer(chat)) } label: {
-                        Label("Reply in Chat Instead", systemImage: "bubble.left").lineLimit(1)
-                    }
+            // A row; at the largest text sizes, where it has no room, one under another, each still on one line.
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: Theme.Space.l) {
+                    otherWays(d, stepping: stepping)
+                    Spacer(minLength: 0)
+                    viewTerminal
                 }
-                if stepping, d.review, holding == nil, let cancel = d.options.dropFirst().first {
-                    Button { send(cancel.key, answer(cancel)) } label: { Text("Cancel").lineLimit(1) }
-                        .accessibilityIdentifier("screen-review-cancel")
+                VStack(alignment: .leading, spacing: Theme.Space.s) {
+                    otherWays(d, stepping: stepping)
+                    viewTerminal
                 }
-                Spacer(minLength: 0)
-                // The whole live terminal of that session, the one Terminal opens in its chat (#563): its keys, its scrolling.
-                Button { Haptics.tap(); showTerminal = true } label: {
-                    Label("View Terminal", systemImage: Theme.Icon.terminal).lineLimit(1)
-                }
-                .accessibilityIdentifier("screen-card-terminal")
             }
             .font(Theme.Font.captionMedium)
             .buttonStyle(.plain)
             .foregroundStyle(Theme.accent)
+    }
+
+    /// Answering some other way: in the chat, or (on the review) Cancel.
+    @ViewBuilder private func otherWays(_ d: ScreenParser.Dialog, stepping: Bool) -> some View {
+        if let chat = d.options.first(where: { $0.kind == .chat }) {
+            Button { send(chat.key, answer(chat)) } label: {
+                Label("Reply in Chat Instead", systemImage: "bubble.left").lineLimit(1).minimumScaleFactor(0.8)
+            }
+        }
+        if stepping, d.review, holding == nil, let cancel = d.options.dropFirst().first {
+            Button { send(cancel.key, answer(cancel)) } label: { Text("Cancel").lineLimit(1).minimumScaleFactor(0.8) }
+                .accessibilityIdentifier("screen-review-cancel")
+        }
+    }
+
+    /// The whole live terminal of that session, the one Terminal opens in its chat (#563): its keys, its scrolling.
+    private var viewTerminal: some View {
+        Button { Haptics.tap(); showTerminal = true } label: {
+            Label("View Terminal", systemImage: Theme.Icon.terminal).lineLimit(1).minimumScaleFactor(0.8)
+        }
+        .accessibilityIdentifier("screen-card-terminal")
     }
 
     /// The raw screen, its keys and a line of text: for anything the dialog reading did not catch.
