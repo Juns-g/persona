@@ -5,10 +5,13 @@ import XCTest
 /// one opens in the link card through the port forwarding (the mock serves its made-up app there); the card's bar goes back,
 /// attaches a screenshot, and picks an element: the Save button, with a line about it, lands over the composer as
 /// Element comment 1. A stopped entry's Start… shows its command, and the page opens once the mock says its port answers.
-/// PERSONA_SHOTS=<dir> keeps each screen (named with PERSONA_STYLE when set).
+/// PERSONA_SHOTS=<dir> keeps each screen (named with PERSONA_STYLE when set); PERSONA_LOOKS=light,dark runs it once in each
+/// appearance (one xcodebuild for both).
 final class PreviewUITests: XCTestCase {
     private var hub: String!
     private let widget = "a1f3c2d4-0000-4000-8000-000000000001"
+    /// The appearance of the pass running, for the shots' names (PERSONA_LOOKS).
+    private var look = ""
 
     override func setUpWithError() throws {
         continueAfterFailure = false
@@ -16,7 +19,6 @@ final class PreviewUITests: XCTestCase {
             throw XCTSkip("needs scripts/mock/mock_hub.py with MOCK_PREVIEW=1 (PERSONA_MOCK_HUB)")
         }
         self.hub = hub
-        _ = try mock("?mode=1") // a run before may have started api
     }
 
     private func mock(_ query: String) throws -> [String: Any] {
@@ -31,7 +33,7 @@ final class PreviewUITests: XCTestCase {
         a.lifetime = .keepAlways
         add(a)
         if let dir = ProcessInfo.processInfo.environment["PERSONA_SHOTS"] {
-            let style = ProcessInfo.processInfo.environment["PERSONA_STYLE"].map { "-" + $0 } ?? ""
+            let style = (ProcessInfo.processInfo.environment["PERSONA_STYLE"].map { "-" + $0 } ?? "") + (look.isEmpty ? "" : "-" + look)
             try? s.pngRepresentation.write(to: URL(fileURLWithPath: dir).appendingPathComponent("preview-" + name + style + ".png"))
         }
     }
@@ -56,6 +58,16 @@ final class PreviewUITests: XCTestCase {
     }
 
     @MainActor func testPreviewPickAnElementAndStartAServer() throws {
+        let looks = ProcessInfo.processInfo.environment["PERSONA_LOOKS"]?.split(separator: ",").map(String.init) ?? [""]
+        for l in looks {
+            look = l
+            if l == "dark" { XCUIDevice.shared.appearance = .dark } else if l == "light" { XCUIDevice.shared.appearance = .light }
+            try pickAndStart()
+        }
+    }
+
+    @MainActor private func pickAndStart() throws {
+        _ = try mock("?mode=1") // a run before may have started api
         let app = XCUIApplication()
         let pair = "persona://pair?url=" + hub.addingPercentEncoding(withAllowedCharacters: .alphanumerics)! + "&token=mock"
         app.launchArguments = ["-pairURL", pair, "-tab", "dev", "-openSession", "macbook/" + widget, "-openChatsFresh", "YES",
