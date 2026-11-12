@@ -183,9 +183,12 @@ export async function brotliCopies(dir: string, files: string[]): Promise<{ file
  * first-screen code changed: #5310 +255 B, which failed main's build, #5193 +138 B, the two merged -321 B, #5320 +29 B.
  * Counted so, ja is 589,323 B on main at c7164e477e (595,073 B the old way; en 585,737 B, zh-Hans 586,565 B), and the
  * same within 1 B at 1c78a837d6, 482f3b93df and 4b72a763c8. The budget is that, with 0 B of room: the 175 B main had,
- * #5193's 98 B among them, are taken back. Raise it on purpose, in the change that needs it.
+ * #5193's 98 B among them, are taken back. Raise it on purpose, in the change that needs it. And 225 B for the manager's
+ * next-message suggestions (#4644: ja 589,548 B against 589,323 B on main at 886a71451; en 585,932 B, zh-Hans
+ * 586,805 B): the composer spends a shown suggestion on any send and drops the pill's send arrow for a risky one
+ * (`suggestion_risky`); the settings switch and its words load with the lazy settings page.
  */
-export const FIRST_SCREEN_BUDGET = 589_323;
+export const FIRST_SCREEN_BUDGET = 589_548;
 
 // The hash in a built file's name: the 8 characters of Rollup's [hash] (url-safe base64) between "-" and the
 // extension, as vite.config.ts names every chunk and asset ("assets/[name]-[hash].js", "[name]-[hash][extname]").
