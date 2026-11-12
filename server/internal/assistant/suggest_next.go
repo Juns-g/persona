@@ -254,11 +254,13 @@ func cleanSuggestion(out string) string {
 	if strings.ContainsAny(t, "\r\n") { // more than one line is not one message
 		return ""
 	}
+	// i18n-ignore: quote marks the model may wrap its answer in, matched and stripped, never shown
 	for _, q := range [][2]string{{`"`, `"`}, {"“", "”"}, {"「", "」"}, {"'", "'"}, {"`", "`"}} {
 		if len(t) >= len(q[0])+len(q[1]) && strings.HasPrefix(t, q[0]) && strings.HasSuffix(t, q[1]) {
 			t = strings.TrimSpace(t[len(q[0]) : len(t)-len(q[1])])
 		}
 	}
+	// i18n-ignore: the full stops the model may end its "NONE" with, matched and stripped, never shown
 	if t == "" || strings.EqualFold(strings.Trim(t, ".。 "), "none") || utf8.RuneCountInString(t) > suggestMaxRunes {
 		return ""
 	}
