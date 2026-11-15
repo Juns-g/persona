@@ -9,6 +9,7 @@ import dagger.hilt.components.SingletonComponent
 import persona.core.contracts.GroupKeys
 import persona.core.contracts.HubUpdateEvent
 import persona.core.contracts.ManagersEvent
+import persona.core.contracts.KnowledgeSelectionEvent
 import persona.core.contracts.ExtensionUiEvent
 import persona.core.contracts.ExtensionOperationEvent
 import persona.core.contracts.ExtensionAuthEvent
@@ -23,6 +24,7 @@ import persona.core.hub.HttpHubManagers
 import persona.core.hub.HttpHubSent
 import persona.core.hub.HttpMachineManagement
 import persona.core.hub.HttpAgentTriage
+import persona.core.hub.HttpKnowledgeSelection
 import persona.core.hub.HttpModelConfiguration
 import persona.core.hub.HttpExtensionManagement
 import persona.core.hub.HttpProviderSetup
@@ -78,6 +80,26 @@ object MachineManagementModule {
         override suspend fun put(value: TriageSwitches) = HttpAgentTriage(runtime.connection()).put(value)
     }
 
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Provides @Singleton fun knowledgeSelection(runtime: ConnectionRuntime, application: Application): KnowledgeSelection = object : KnowledgeSelection {
+        private fun api() = HttpKnowledgeSelection(runtime.connection())
+        override val changes: Flow<KnowledgeSelectionChange> = (application as PersonaApp).hub
+            .flatMapLatest { hub ->
+                val events = hub?.connection?.events ?: emptyFlow()
+                AssistantManagerChoice.current.flatMapLatest { choice ->
+                    events.filterIsInstance<KnowledgeSelectionEvent>().filter { choice.owns(it.manager) }
+                        .map { KnowledgeSelectionChange(it.manager) }
+                }
+            }
+        override suspend fun selection() = api().selection()
+        override suspend fun put(document: JsonObject) = api().put(document)
+        override suspend fun <T> withPinnedConnection(block: suspend KnowledgeSelection.() -> T): T =
+            HttpKnowledgeSelection(runtime.connection()).block()
+        override suspend fun candidates(source: String) = api().candidates(source)
+        override suspend fun documents() = api().documents()
+        override suspend fun document(id: String) = api().document(id)
+    }
+
     @Provides @Singleton fun models(runtime: ConnectionRuntime): ModelConfiguration = object : ModelConfiguration {
         private fun api() = HttpModelConfiguration(runtime.connection())
         override suspend fun catalog() = api().catalog()
@@ -107,12 +129,16 @@ object MachineManagementModule {
     @OptIn(ExperimentalCoroutinesApi::class)
     @Provides @Singleton fun providers(runtime: ConnectionRuntime, application: Application): ProviderSetup = object : ProviderSetup {
         private fun api() = HttpProviderSetup(runtime.connection())
+        override fun ownsMachine(id: String) = GroupKeys.namespaceOf(id) == runtime.selected.value?.namespace
         override val builtinPresets: Flow<Boolean> = (application as PersonaApp).hub
             .flatMapLatest { hub -> hub?.connection?.serverFeatures ?: flowOf(emptySet()) }
             .map { BuiltinPresetsFeature in it }.distinctUntilChanged()
         override val launcherScope: Flow<Boolean> = (application as PersonaApp).hub
             .flatMapLatest { hub -> hub?.connection?.serverFeatures ?: flowOf(emptySet()) }
             .map { LauncherScopeFeature in it }.distinctUntilChanged()
+        override val launcherImportParse: Flow<Boolean> = (application as PersonaApp).hub
+            .flatMapLatest { hub -> hub?.connection?.serverFeatures ?: flowOf(emptySet()) }
+            .map { LauncherImportParseFeature in it }.distinctUntilChanged()
         override suspend fun presets() = api().presets()
         override suspend fun add(provider: NewProvider) = api().add(provider)
         override suspend fun create(provider: NewProvider) = api().create(provider)
@@ -124,8 +150,9 @@ object MachineManagementModule {
         override suspend fun remove(name: String) = api().remove(name)
         override suspend fun restore(name: String) = api().restore(name)
         override suspend fun check(name: String, machine: String?) = api().check(name, machine)
-        override suspend fun importPreview(machine: String) = api().importPreview(machine)
-        override suspend fun import(machine: String, providers: List<String>) = api().import(machine, providers)
+        override suspend fun importPreview(machine: String, alias: String?) = api().importPreview(machine, alias)
+        override suspend fun import(machine: String, providers: List<String>, alias: String?) = api().import(machine, providers, alias)
+        override suspend fun parse(text: String) = api().parse(text)
     }
 
     // Machines › "Add computer" (docs/assistant/onboarding.md 4.2): a new computer on the selected group's hub; a code again, the machine list
@@ -187,6 +214,7 @@ object MachineManagementModule {
             }
         // Source subscriptions (#2041): entry rows once the hub says they deliver.
         override val subscriptionsAvailable: Flow<Boolean> = features.map { "source_subscriptions" in it }.distinctUntilChanged()
+        override val inboxSourcesAvailable: Flow<Boolean> = features.map { "inbox_sources" in it }.distinctUntilChanged()
         override suspend fun subscriptionSummary() = api().subscriptionSummary()
         // A hub without the `extensions` feature (before #1844, or no hello yet) answers under /api/v1/plugins only;
         // a newer one under both.
@@ -208,6 +236,7 @@ object MachineManagementModule {
             changed { api().setContribution(id, point, contribution, enabled) }
         override suspend fun extensions() = api().extensions()
         override suspend fun extension(id: String) = api().extension(id)
+        override fun adminNetworkUrl(id: String) = runCatching { api().adminNetworkUrl(id) }.getOrNull()
         override suspend fun setEnabled(id: String, enabled: Boolean, cascade: Boolean) = changed { api().setEnabled(id, enabled, cascade) }
         override suspend fun setAutoUpgrade(id: String, auto: Boolean) = changed { api().setAutoUpgrade(id, auto) }
         override suspend fun autoUpgrades() = api().autoUpgrades()
@@ -222,6 +251,8 @@ object MachineManagementModule {
         override suspend fun uiAction(
             extension: String, ui: String, action: String, context: ExtensionUiContext?, state: String?, values: Map<String, String>?,
         ) = api().uiAction(extension, ui, action, context, state, values)
+        override fun iconPath(value: String) = runCatching { api().iconPath(value) }.getOrNull()
+        override suspend fun icon(path: String) = api().icon(path)
         override suspend fun markets() = api().markets()
         override suspend fun addMarket(spec: String, token: String?) = api().addMarket(spec, token)
         override suspend fun removeMarket(id: String) = api().removeMarket(id)

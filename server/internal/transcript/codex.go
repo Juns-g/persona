@@ -50,10 +50,13 @@ type codexPayload struct {
 	Reason string          `json:"reason"`
 	Info   *struct {
 		Total struct {
-			OutputTokens int `json:"output_tokens"`
+			OutputTokens int   `json:"output_tokens"`
+			TotalTokens  int64 `json:"total_tokens"`
 		} `json:"total_token_usage"`
 		Last struct {
-			InputTokens int `json:"input_tokens"`
+			InputTokens       int   `json:"input_tokens"`
+			CachedInputTokens int64 `json:"cached_input_tokens"`
+			OutputTokens      int64 `json:"output_tokens"`
 		} `json:"last_token_usage"`
 		ModelContextWindow int `json:"model_context_window"`
 	} `json:"info"`
@@ -121,6 +124,9 @@ type codexItem struct {
 		Content []struct {
 			Type string `json:"type"`
 			Text string `json:"text"`
+			// An image block (MCP content: base64 data and its type), a connector's or computer use's picture.
+			Data     string `json:"data"`
+			MimeType string `json:"mimeType"`
 		} `json:"content"`
 		IsError bool `json:"isError"`
 	} `json:"result"`
@@ -299,6 +305,8 @@ func parseCodexLine(seq int, line []byte, meta *Meta) []proto.Item {
 			if p.Info.ModelContextWindow > 0 {
 				meta.ContextWindow = p.Info.ModelContextWindow
 			}
+			last := p.Info.Last
+			meta.codexRequest(p.Info.Total.TotalTokens, int64(last.InputTokens), last.CachedInputTokens, last.OutputTokens)
 		}
 		if p.RateLimits != nil { // none: the provider gave none this time, the last ones stand
 			if until, ok := p.RateLimits.fullUntil(); ok {
@@ -309,6 +317,7 @@ func parseCodexLine(seq int, line []byte, meta *Meta) []proto.Item {
 	case "task_started":
 		meta.TurnOpen, meta.TurnClosed = true, false
 		meta.codexTurnID, meta.codexUserID, meta.codexTurnModel = p.TurnID, "", ""
+		meta.codexUsage = proto.TokenUsage{}
 		meta.clearTurnError()
 		meta.turnWorked = false
 		meta.turnParts = nil
@@ -327,12 +336,14 @@ func parseCodexLine(seq int, line []byte, meta *Meta) []proto.Item {
 			}
 		}
 		meta.turnWorked = false
+		usage := meta.codexTurnUsage()
 		ms, ok := recordedMilliseconds(p.DurationMS)
 		if !ok || strings.TrimSpace(p.TurnID) == "" || (meta.codexTurnID != "" && meta.codexTurnID != p.TurnID) {
 			return nil
 		}
 		it := mk(0, "", "system", "turn_duration")
 		it.TurnDuration = &proto.TurnDuration{DurationMS: ms, Source: "codex_task_complete", TurnID: p.TurnID, UserItemID: meta.codexUserID}
+		it.Usage = usage // the turn's requests, summed (item_usage.go)
 		return []proto.Item{it}
 	case "turn_aborted":
 		meta.TurnOpen, meta.TurnClosed = false, true
@@ -340,6 +351,7 @@ func parseCodexLine(seq int, line []byte, meta *Meta) []proto.Item {
 		meta.turnWorked = false
 		it := mk(0, "", "system", proto.KindNotice)
 		it.Text = InterruptedNotice
+		it.Usage = meta.codexTurnUsage() // what the turn used before it was stopped
 		return []proto.Item{it}
 	case "thread_goal_updated":
 		return meta.codexGoalUpdated(p.Goal, l.Timestamp, func() proto.Item { return mk(0, "", "system", proto.KindNotice) })
@@ -409,9 +421,18 @@ func codexItemLines(seq int, ts time.Time, it *codexItem, meta *Meta) []proto.It
 			}
 		}
 		text := strings.TrimSpace(strings.Join(parts, "\n"))
-		if len(images) > 0 { // the apps show these paths as thumbnails (the phone's own photos travel the same way)
-			text = strings.TrimSpace(text + "\n\n<attached_images>\n" + strings.Join(images, "\n") + "\n</attached_images>")
+		items, paseo := paseoInput(func(n int, role, kind string) proto.Item { return mk(n, it.ID, role, kind) }, 0, text)
+		if paseo && (len(images) == 0 || attachImages(items, images)) {
+			if meta.codexUserID == "" && len(items) > 0 { // it started the turn: its notices woke the agent
+				markWake(items)
+				meta.codexUserID = items[0].ID
+			}
+			if meta.FirstUser == "" && len(items) > 0 && items[0].Kind == proto.KindText {
+				meta.FirstUser = items[0].Text
+			}
+			return items
 		}
+		text = strings.TrimSpace(text + imagesNote(images))
 		if text == "" {
 			return nil
 		}
@@ -433,16 +454,13 @@ func codexItemLines(seq int, ts time.Time, it *codexItem, meta *Meta) []proto.It
 		if text == "" {
 			return nil
 		}
-		// Narration between tool calls ("commentary") reads like Claude's thinking blocks: part of the work, not
-		// the answer.
-		kind := proto.KindText
-		if it.Phase == "commentary" {
-			kind = proto.KindThinking
-		} else if t := withoutBotmuxSentinel(text); t != "" {
+		// AgentMessage is what Codex said, including narration between tool calls; only Reasoning is thinking.
+		if t := withoutBotmuxSentinel(text); t != "" {
 			meta.LastText = t
 			meta.turnSaid(t)
 		}
-		a := mk(0, it.ID, "assistant", kind)
+		a := mk(0, it.ID, "assistant", proto.KindText)
+		a.Narration = it.Phase == "commentary"
 		a.Text = clip(text)
 		return []proto.Item{a}
 	case "Reasoning":
@@ -500,12 +518,16 @@ func codexItemLines(seq int, ts time.Time, it *codexItem, meta *Meta) []proto.It
 			args = json.RawMessage(`{}`)
 		}
 		var parts []string
+		var images []*proto.Image
 		isErr := it.Status == "failed" || len(it.Error) > 0 && string(it.Error) != "null"
 		if it.Result != nil {
 			isErr = isErr || it.Result.IsError
 			for _, c := range it.Result.Content {
-				if c.Type == "text" {
+				switch {
+				case c.Type == "text":
 					parts = append(parts, c.Text)
+				case c.Type == "image" && c.Data != "" && len(c.Data) <= maxImageLen && strings.HasPrefix(c.MimeType, "image/"):
+					images = append(images, &proto.Image{Mime: c.MimeType, Data: c.Data})
 				}
 			}
 		}
@@ -514,6 +536,11 @@ func codexItemLines(seq int, ts time.Time, it *codexItem, meta *Meta) []proto.It
 		}
 		items := codexTool(mk, it.ID, "mcp__"+it.Server+"__"+it.Tool, args, strings.Join(parts, "\n"), isErr)
 		items[1].Outcome.Status = codexStatus(it.Status, isErr)
+		for j, img := range images { // after the result, on the call's card, as a Claude tool result's pictures are
+			im := mk(2+j, it.ID, "user", proto.KindImage)
+			im.ToolUseID, im.Image = it.ID, img
+			items = append(items, im)
+		}
 		return items
 	case "ImageView":
 		input, _ := json.Marshal(map[string]string{"file_path": strings.TrimPrefix(it.Path, "file://")})
@@ -561,6 +588,27 @@ var (
 	// Ambient state the Codex app attaches to a message (open browser tabs and such), not something the user said.
 	codexAmbientRe = lazyre.New(`(?s)<in-app-browser-context[^>]*>.*?</in-app-browser-context>`)
 )
+
+// imagesNote is the note a user message's pictures become after its words ("" for none): their local paths, which the
+// apps show as thumbnails (the phone's own photos travel the same way).
+func imagesNote(images []string) string {
+	if len(images) == 0 {
+		return ""
+	}
+	return "\n\n<attached_images>\n" + strings.Join(images, "\n") + "\n</attached_images>"
+}
+
+// attachImages puts a message's pictures (imagesNote) after the words of the last user text among items: false when
+// none can carry them.
+func attachImages(items []proto.Item, images []string) bool {
+	for i := len(items) - 1; i >= 0; i-- {
+		if items[i].Role == "user" && items[i].Kind == proto.KindText {
+			items[i].Text = strings.TrimSpace(items[i].Text + imagesNote(images))
+			return true
+		}
+	}
+	return false
+}
 
 // codexUserText cleans what Codex records as the user's message: ambient context (and Persona's) goes, and the answer to a question
 // Codex asked (request_user_input, stored as JSON) reads as the answer itself ("question: answer", with a full-width colon, when several).

@@ -52,7 +52,7 @@ func open(t testing.TB) *DB {
 var openTables = []string{"push_device_retirements", "lock_tests", "client_ops", "devices", "device_tokens", "pair_tokens",
 	"device_sessions", "live_activities", "phone_tools", "node_sessions", "mail_accounts", "interactions", "settings",
 	"inbox_items", "kb_entities", "connector_secrets", "machine_systems", "machine_metrics", "machine_usage",
-	"sent_messages", "todos", "todo_agents", "assistant_always", "sent_as_user"}
+	"sent_messages", "todos", "todo_agents", "assistant_always", "sent_as_user", "hub_push_sent"}
 
 // open empties what TRUNCATE openTables CASCADE did, a table only the cascade reaches included, and leaves a table
 // that had no row in that cascade its files: it truncates only what has a row.
@@ -820,6 +820,35 @@ func TestMailAccountsReplace(t *testing.T) {
 	}
 }
 
+// An ask_user that let go of its turn (assistant/ask_release.go, #7392) is marked resumable while it is pending: a
+// restart then keeps it, as it keeps one asked with wait false. One that ended or never was is not marked.
+func TestMarkInteractionResumableKeepsTheCardAcrossARestart(t *testing.T) {
+	d, ctx := open(t), context.Background()
+	at := time.Now()
+	for _, id := range []string{"ixheld", "ixended", "ixkept"} {
+		if err := d.InsertInteraction(ctx, proto.Interaction{ID: id, MachineID: "server", SessionID: "s", Kind: proto.IxQuestion,
+			ToolName: "ask_user", CreatedAt: at, ExpiresAt: at.Add(time.Hour)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := d.FinishInteraction(ctx, "ixended", "resolved", &proto.Resolution{Answers: map[string]string{"q": "a"}}); err != nil {
+		t.Fatal(err)
+	}
+	for id, want := range map[string]bool{"ixheld": true, "ixended": false, "nope": false} {
+		if ok, err := d.MarkInteractionResumable(ctx, id); err != nil || ok != want {
+			t.Fatalf("mark %s: %v, %v; want %v", id, ok, err, want)
+		}
+	}
+	kept, cancelled, err := d.ExpireStaleInteractions(ctx)
+	if err != nil || len(kept) != 1 || kept[0].ID != "ixheld" || !kept[0].Resumable || kept[0].ToolName != "ask_user" ||
+		len(kept[0].Questions) != 0 {
+		t.Fatalf("kept %+v, %v", kept, err)
+	}
+	if !slices.Equal(cancelled, []string{"ixkept"}) {
+		t.Fatalf("cancelled %v: only the one never marked", cancelled)
+	}
+}
+
 func TestInteractions(t *testing.T) {
 	d, ctx := open(t), context.Background()
 	ix := proto.Interaction{ID: "ix1", MachineID: "server", SessionID: "s", Kind: proto.IxQuestion, CreatedAt: time.Now()}
@@ -946,6 +975,43 @@ func TestPendingInteractionsIndexed(t *testing.T) {
 
 // Each combination of filters returns the same rows the single OR statement did: newest first, limited, and a
 // session alone matches that session id on every machine.
+// LateAnswer records answers given after a card expired: one question at a time, added up, the status kept; a card
+// that did not expire is never written over, nor is the expiry's own dismissal kept beside an answer.
+func TestLateAnswer(t *testing.T) {
+	d, ctx := open(t), context.Background()
+	at := time.Now().UTC()
+	for _, id := range []string{"ix_expired", "ix_pending"} {
+		if err := d.InsertInteraction(ctx, proto.Interaction{ID: id, MachineID: "m1", SessionID: "s1", Kind: proto.IxQuestion, CreatedAt: at}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := d.FinishInteraction(ctx, "ix_expired", "expired", &proto.Resolution{Dismiss: true, Reason: proto.DismissedExpired}); err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range []map[string]string{{"Q1": "A"}, {"Q2": "B"}} {
+		if ok, err := d.LateAnswer(ctx, "ix_expired", a, "", ""); err != nil || !ok {
+			t.Fatalf("late answer %v: %v %v", a, ok, err)
+		}
+	}
+	status, res, err := d.InteractionOutcome(ctx, "ix_expired")
+	if err != nil || status != "expired" || res == nil || !res.Late || res.Dismiss || res.Reason != "" || res.AnsweredBy != "" ||
+		res.Answers["Q1"] != "A" || res.Answers["Q2"] != "B" {
+		t.Fatalf("expired card: %s %+v %v", status, res, err)
+	}
+	if ok, err := d.LateAnswer(ctx, "ix_expired", map[string]string{"Q1": "C"}, proto.AnsweredByDefault, "deadline"); err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	if _, res, _ := d.InteractionOutcome(ctx, "ix_expired"); res.AnsweredBy != proto.AnsweredByDefault || res.Reason != "deadline" || res.Answers["Q1"] != "C" || res.Answers["Q2"] != "B" {
+		t.Fatalf("default: %+v", res)
+	}
+	if ok, err := d.LateAnswer(ctx, "ix_pending", map[string]string{"Q1": "A"}, "", ""); err != nil || ok {
+		t.Fatalf("pending card written: %v %v", ok, err)
+	}
+	if status, res, _ := d.InteractionOutcome(ctx, "ix_pending"); status != "pending" || res != nil {
+		t.Fatalf("pending card: %s %+v", status, res)
+	}
+}
+
 func TestInteractionsFilters(t *testing.T) {
 	d, ctx := open(t), context.Background()
 	base := time.Now().Add(-time.Hour).UTC()
@@ -983,6 +1049,66 @@ func TestInteractionsFilters(t *testing.T) {
 			if strings.Join(got, ",") != strings.Join(want, ",") {
 				t.Fatalf("Interactions(%q, %q, %d) = %v, want %v", c.machine, c.session, c.limit, got, want)
 			}
+		}
+	}
+}
+
+// InteractionsPage pages the history back by time: since, kind and a cursor of (created_at, id), so rows of the same
+// time are neither skipped nor read twice across pages, and a full page names the next one's cursor.
+func TestInteractionsPage(t *testing.T) {
+	d, ctx := open(t), context.Background()
+	base := time.Now().Add(-time.Hour).UTC().Truncate(time.Second)
+	for i := range 9 {
+		kind := proto.IxQuestion
+		if i == 4 {
+			kind = proto.IxPermission
+		}
+		at := base.Add(time.Duration(i/3) * time.Minute) // three rows each minute
+		if err := d.InsertInteraction(ctx, proto.Interaction{ID: fmt.Sprintf("ix%d", i), MachineID: "m1", SessionID: "s1",
+			Kind: kind, CreatedAt: at}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var pages []string
+	q := InteractionQuery{Kind: proto.IxQuestion, Since: base, Limit: 3}
+	for range 10 {
+		page, err := d.InteractionsPage(ctx, q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var ids []string
+		for _, r := range page.Records {
+			ids = append(ids, r.Interaction.ID)
+		}
+		pages = append(pages, strings.Join(ids, ","))
+		if page.NextBefore == nil {
+			break
+		}
+		q.Before, q.BeforeID = *page.NextBefore, page.NextBeforeID
+	}
+	if got := strings.Join(pages, " | "); got != "ix8,ix7,ix6 | ix5,ix3,ix2 | ix1,ix0" {
+		t.Fatalf("pages %q", got)
+	}
+	// since leaves the older rows out; before without an id is strictly before; no filter is every row.
+	for _, c := range []struct {
+		q    InteractionQuery
+		want string
+	}{
+		{InteractionQuery{Since: base.Add(2 * time.Minute)}, "ix8,ix7,ix6"},
+		{InteractionQuery{Before: base.Add(time.Minute), Machine: "m1", Session: "s1"}, "ix2,ix1,ix0"},
+		{InteractionQuery{Kind: proto.IxPermission}, "ix4"},
+		{InteractionQuery{Session: "nope", Since: base}, ""},
+	} {
+		page, err := d.InteractionsPage(ctx, c.q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var ids []string
+		for _, r := range page.Records {
+			ids = append(ids, r.Interaction.ID)
+		}
+		if got := strings.Join(ids, ","); got != c.want || page.NextBefore != nil {
+			t.Errorf("%+v: %s (next %v), want %s", c.q, got, page.NextBefore, c.want)
 		}
 	}
 }

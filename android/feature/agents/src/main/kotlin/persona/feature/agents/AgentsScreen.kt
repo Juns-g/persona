@@ -1,6 +1,7 @@
 package persona.feature.agents
 
 import persona.core.contracts.clipped
+import persona.core.designsystem.dense
 import persona.core.designsystem.text
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
@@ -38,6 +39,8 @@ import persona.core.domain.sort.*
 import persona.core.domain.answer.firstBySession
 import persona.core.domain.answer.rowLine
 import persona.core.domain.answer.askingLine
+import persona.core.domain.showsStarCard
+import persona.core.domain.showsStarPill
 import persona.core.navigation.*
 import kotlinx.coroutines.delay
 import java.time.Instant
@@ -107,13 +110,17 @@ internal fun AgentsScreen(
     val sessionsByKey = remember(page.sessions) { page.sessions.associateBy { it.key } }
     // By To-do only when the hub has to-dos, as iOS offers it (`DevGrouping.offered(supportsTodos:)`, #4338 A5).
     val todosSupported by (model.tasks?.todosSupported ?: kotlinx.coroutines.flow.MutableStateFlow(false)).collectAsStateWithLifecycle()
-    val groupings = offeredGroupings(todosSupported)
+    // "By pinned" only from a hub with the direction tree (#4352), or while it is the one chosen.
+    val groupings = offeredGroupings(todosSupported, page.directionsAvailable || page.preferences.grouping == AgentGrouping.Direction)
     // A fallback for when no app feedback is provided (previews, tests): the page's own toast, as the root's.
     val toast = persona.core.designsystem.rememberToastState()
     val feedback = persona.core.designsystem.LocalAppFeedback.current
+    // The GitHub star prompts (#5761): the pill under the first-run empty state, the card in the notice slot. None
+    // without the app's store (previews, tests).
+    val starPrompt = LocalStarPrompt.current
+    val starState = starPrompt?.state?.collectAsStateWithLifecycle()?.value
+    val context = androidx.compose.ui.platform.LocalContext.current
     var menu by remember { mutableStateOf(false) }
-    // The grouping pill's Group By picker (iOS's), groupings only (#4338 A4).
-    var groupingMenu by remember { mutableStateOf(false) }
     var searchVisible by rememberSaveable { mutableStateOf(false) }
     val homeChrome = LocalHomeChrome.current != null
     val firstPageIncomplete = !page.loaded && page.list.groups.isEmpty()
@@ -192,7 +199,7 @@ internal fun AgentsScreen(
     val messagesBySession = remember(outbox) { outbox.groupBy { it.session } }
     // Each row's own card (the one that came first) and how many it has, as on the space page (#3964).
     val requestCards = remember(pending) { pending.firstBySession() }
-    val cardCounts = remember(pending) { pending.groupingBy { it.sessionKey }.eachCount() }
+    val cardCounts = remember(pending) { pending.distinctBy { it.id }.groupingBy { it.homeKey }.eachCount() }
     val unknownRequests = remember(pending, delivery) {
         pending.filter { delivery[it.id] == RequestDelivery.Unknown }.map { it.sessionKey }.toSet()
     }
@@ -208,7 +215,11 @@ internal fun AgentsScreen(
         if (!row.session.isLive) {
             historyMachine = row.session.machineId
             historySession = row.session.sessionId
-        } else { model.opened(row); open(row.session.key) }
+        } else {
+            model.opened(row)
+            // A search hit inside a side session (#7944) opens the parent with that side shown.
+            open(page.settings.sideHit(row.session, page.sessions, names) ?: row.session.key)
+        }
     }
     fun newSession(space: AgentSpacePreset? = null) { creationModel?.startIn(space); newAgent = true }
     // Built with the page off the main thread (AgentsViewModel).
@@ -289,11 +300,13 @@ internal fun AgentsScreen(
     // it, the agents' rows under their line and the idle ones behind one quiet line; each computer's idle repositories a row
     // each in its Idle Repositories. Brief and Board keep their headings and "N more idle" (decision 8).
     val repoTree = PersonaTheme.style == AppStyle.Glass && page.preferences.grouping == AgentGrouping.Repo
-    val tree = remember(page.list, page.settings.machineFilter, tabs, page.preferences.foldedTabs, page.preferences.mutes, expandedTasks, repoTree) {
+    // By project on Glass folds a space's opened idle agents again with "Hide N Idle" (iOS `collapseRow`, #4338 A8).
+    val hideIdle = PersonaTheme.style == AppStyle.Glass && page.preferences.grouping == AgentGrouping.MachineSpace
+    val tree = remember(page.list, page.settings.machineFilter, tabs, page.preferences.foldedTabs, page.preferences.mutes, expandedTasks, repoTree, hideIdle) {
         agentTreeEntries(page.list, page.settings.machineFilter, tabs, page.preferences.foldedTabs, page.preferences.mutes, expandedTasks,
             showAll = page.settings.expandedIdle.takeIf {
                 page.settings.query.isEmpty() && page.settings.quick == AgentQuickFilter.All && !page.pagination.paged
-            }, idleRepos = repoTree)
+            }, idleRepos = repoTree, hideIdle = hideIdle)
     }
     // Rows outside the tree name their computer while the list mixes computers, By To-do's their host while it mixes
     // hosts (iOS `rowMachine`, `mixedHosts`; #4338 A9).
@@ -367,10 +380,17 @@ internal fun AgentsScreen(
             item("quick-filters") {
                 // "Lark groups" / "Terminal" (#2526) only while they have agents (or are chosen), as iOS and the web.
                 val shown = AgentQuickFilter.shown(page.settings.quick, quickCounts)
-                HomeAgentFilters(shown.map { filter ->
+                val bays = shown.map { filter ->
                     Bay(filter.label, if (filter == AgentQuickFilter.All) page.allCount else quickCounts[filter] ?: 0, filter.state?.designStatus,
-                        icon = PersonaIcons.backgroundWaiting.takeIf { filter == AgentQuickFilter.BackgroundWaiting })
-                }, shown.indexOf(page.settings.quick), { model.filter(shown[it]) }, Modifier.padding(vertical = Tokens.Space.s))
+                        icon = PersonaIcons.backgroundWaiting.takeIf { filter == AgentQuickFilter.BackgroundWaiting },
+                        waiting = filter == AgentQuickFilter.BackgroundWaiting)
+                }
+                if (homeChrome) JAgentFilterCapsule(bays, shown.indexOf(page.settings.quick), { model.filter(shown[it]) },
+                    groupLabel = "${stringResource(R.string.agents_group_by)}: ${page.preferences.grouping.label}",
+                    groupActions = groupings.map { grouping ->
+                        JAction(grouping.label, checked = page.preferences.grouping == grouping, onClick = { model.grouping(grouping) })
+                    }, modifier = Modifier.padding(vertical = Tokens.Space.s))
+                else HomeAgentFilters(bays, shown.indexOf(page.settings.quick), { model.filter(shown[it]) }, Modifier.padding(vertical = Tokens.Space.s))
             }
             // The computer the list is narrowed to (iOS's "Only <computer>", #1659): with the shared home chrome the computer
             // is chosen in a sheet and its chips don't show, so nothing else on the page says so. A tap shows every computer.
@@ -382,13 +402,6 @@ internal fun AgentsScreen(
                         .semantics { onClick(label = hint) { model.machine(""); onMachineSelected(""); true } },
                         selected = true, onClick = { model.machine(""); onMachineSelected("") },
                         role = Role.Button, trailingIcon = persona.core.designsystem.icons.PersonaIcons.clear)
-                }
-            }
-            if (homeChrome) item("grouping") {
-                Row(Modifier.padding(horizontal = Tokens.Space.l, vertical = Tokens.Space.xs)) {
-                    // As iOS: the grouping's own icon, its name and a chevron, opening a Group By picker.
-                    JChip(page.preferences.grouping.label, onClick = { groupingMenu = true }, icon = page.preferences.grouping.icon,
-                        role = Role.Button, trailingIcon = PersonaIcons.expand)
                 }
             }
             // "botmux" (web #2786): show or hide botmux's sessions in this list, kept on this phone.
@@ -411,6 +424,14 @@ internal fun AgentsScreen(
                         onDismiss = model::dismissHubNotice,
                         modifier = Modifier.padding(bottom = Tokens.Space.xs),
                     )
+                }
+            }
+            // The star card waits while a session needs the user or a card waits, so it never pushes a waiting one down (#5761).
+            if (starPrompt != null && starState != null && page.loaded && waitingRows.isEmpty() && pending.isEmpty() && page.settings.query.isEmpty() &&
+                page.preferences.range != AgentRange.History && showsStarCard(starState, now.toEpochMilli())) {
+                item("star-card") {
+                    StarPromptCard(onStar = { starPrompt.star(context) }, onLater = starPrompt::later,
+                        modifier = Modifier.padding(bottom = Tokens.Space.xs))
                 }
             }
             if (connection != ConnectionState.Online) item("connection") { ConnectionNotice(connection, ::connectionSettings) }
@@ -467,6 +488,9 @@ internal fun AgentsScreen(
                     onAction = model::refresh,
                 ) else AgentsListPlaceholder()
             }
+            // No session yet with a computer to start one on: the empty state's New session (and the star pill under it).
+            val firstRun = page.allCount == 0 && page.settings.query.isEmpty() &&
+                !(page.machines.isEmpty() && page.settings.machineFilter.isEmpty())
             if (page.loaded && page.list.groups.isEmpty()) item("empty") {
                 // Three cases, as iOS: a search with no result (no New session, which read as if the agents were gone), no
                 // sessions at all, and a quick filter with nothing left (Show all).
@@ -483,7 +507,7 @@ internal fun AgentsScreen(
                         stringResource(R.string.agents_empty_no_computer_title), stringResource(R.string.agents_empty_no_computer_hint),
                         icon = PhIcons.Desktop,
                         action = { JButton(stringResource(ReadinessActionId.AddComputer.label), { navigator.navigate(persona.core.navigation.AddComputerRoute()) }) })
-                    page.allCount == 0 -> JEmptyState(
+                    firstRun -> JEmptyState(
                         stringResource(if (page.settings.machineFilter.isEmpty()) R.string.agents_empty_first_title else R.string.agents_empty_machine_title),
                         stringResource(R.string.agents_empty_first_hint), icon = PhIcons.Robot,
                         action = { JButton(stringResource(R.string.agents_action_new_session), { newSession() }) })
@@ -493,6 +517,9 @@ internal fun AgentsScreen(
                         icon = PhIcons.CheckCircle,
                         action = { JButton(stringResource(R.string.agents_empty_show_all), { model.filter(AgentQuickFilter.All) }, kind = JButtonKind.Secondary) })
                 }
+            }
+            if (starPrompt != null && starState != null && page.loaded && page.list.groups.isEmpty() && firstRun && showsStarPill(starState)) {
+                item("star-pill") { StarPill(onStar = { starPrompt.star(context) }, onHide = starPrompt::hidePill) }
             }
             if (page.pagination.hasPrevious) item("sessions-previous", contentType = "pagination") {
                 JTextButton(stringResource(R.string.agents_page_previous), model::loadPrevious)
@@ -555,7 +582,7 @@ internal fun AgentsScreen(
                                 }, quiet = entry.quiet, offline = line?.offline == true)
                         } else if (entry.space) AgentSpaceHeader(groupTitle, group.folded, { model.fold(group) }, depth = entry.depth, first = entry.first,
                             quiet = entry.quiet, sessions = group.totalCount ?: group.rows.size, counts = group.headingCounts,
-                            flags = buildList {
+                            waiting = group.waitingInBackground, flags = buildList {
                                 if (space != null && space.preferenceKey in page.preferences.pins.spaces) add(RowFlag(stringResource(R.string.agents_flag_space_pinned), PhIcons.PushPin))
                                 if (space != null && space.preferenceKey in page.preferences.mutes.spaces) add(RowFlag(stringResource(R.string.agents_flag_space_muted), PhIcons.Prohibit))
                                 // iOS TodoSpaceTag: the project is on a to-do.
@@ -572,9 +599,23 @@ internal fun AgentsScreen(
                                 counts = listOf(todoState.countTone to group.rows.count { !it.isNestedSubtask }),
                                 onAction = { navigator.navigate(persona.core.navigation.TodoDetailRoute(todoId)) },
                                 actionLabel = stringResource(R.string.agents_view_todo))
+                        } else if (group.id.startsWith(DirectionTaskPrefix)) {
+                            // "By direction": a to-do of the hub's tree under its direction (#4352); the arrow opens it.
+                            val todoId = group.id.removePrefix(DirectionTaskPrefix).substringAfter('/')
+                            AgentSpaceHeader(groupTitle, group.folded, { model.fold(group) }, depth = entry.depth, first = entry.first,
+                                counts = group.headingCounts, icon = PersonaIcons.todo, kind = stringResource(R.string.agents_kind_todo),
+                                menu = { HeadingAction(PersonaIcons.forward, stringResource(R.string.agents_view_todo),
+                                    { navigator.navigate(persona.core.navigation.TodoDetailRoute(todoId)) }) })
+                        } else if (group.id.startsWith(DirectionGroupPrefix)) {
+                            val todoCount = page.list.groups.count { it.under == group.id }
+                            AgentTreeHeader(groupTitle, group.folded, { model.fold(group) }, first = entry.first,
+                                icon = PersonaIcons.pinned, counts = group.headingCounts,
+                                detail = pluralStringResource(R.plurals.agents_count_todos, todoCount, todoCount))
                         } else AgentTreeHeader(groupTitle, group.folded, { model.fold(group) }, first = entry.first,
                             icon = PhIcons.PushPin.takeIf { group.id == "pinned" } ?: PersonaIcons.backgroundWaiting.takeIf { group.id == "state/background" },
-                            counts = group.stateSectionCounts ?: group.todoLooseCounts ?: group.headingCounts)
+                            counts = group.stateSectionCounts ?: group.todoLooseCounts ?: group.sectionCounts, waitsInBackground = group.id == "state/background",
+                            // Pinned's counts are the states', so a clock counts the agents that only wait in the background apart.
+                            waiting = if (group.stateSectionCounts == null && group.todoLooseCounts == null) group.waitingInBackground else 0)
                     }
                     is TreeRowEntry -> item(entry.key, contentType = "session") {
                         val row = entry.row
@@ -613,11 +654,13 @@ internal fun AgentsScreen(
                         val slot = repoSlots[entry.key]
                         val fold = entry.fold
                         // By Repository on Glass: iOS's quiet line, which folds them again once open (#4338 A8).
-                        if (fold != null) AgentRepoIdleLine(fold.rows.size, fold.names, fold.open,
+                        if (fold != null && repoTree) AgentRepoIdleLine(fold.rows.size, fold.names, fold.open,
                             onClick = { if (fold.open) model.hideIdle(entry.group) else model.showIdle(entry.group) },
                             modifier = if (slot != null) Modifier.repoCard(slot.first, slot.last) else Modifier, level = slot?.level ?: entry.depth)
-                        else AgentIdleRow(entry.hidden, onClick = { model.showIdle(entry.group) },
-                            modifier = if (slot != null) Modifier.repoCard(slot.first, slot.last) else Modifier, depth = slot?.level ?: entry.depth)
+                        // By project on Glass: "Hide N Idle" after the opened agents; closed, "N more idle" with the first six's tabs (iOS `IdleFoldRow`).
+                        else AgentIdleRow(entry.hidden, onClick = { if (fold != null) model.hideIdle(entry.group) else model.showIdle(entry.group) },
+                            modifier = if (slot != null) Modifier.repoCard(slot.first, slot.last) else Modifier, depth = slot?.level ?: entry.depth,
+                            open = fold != null, tabs = entry.tabs, compact = page.preferences.compact)
                     }
                     is TreeIdleReposEntry -> item(entry.key, contentType = "section") {
                         JSectionHeader(stringResource(R.string.agents_idle_repositories), count = entry.count, countTone = Status.Idle)
@@ -680,9 +723,6 @@ internal fun AgentsScreen(
         if (requestsInMenu) add(JAction(stringResource(R.string.agents_requests_history), icon = PersonaIcons.waitsForYou,
             onClick = { allRequests = true }))
     }, { menu = false }, title = stringResource(R.string.agents_action_list_settings), note = stringResource(R.string.agents_menu_note))
-    if (groupingMenu) JActionSheet(groupings.map { grouping ->
-        JAction(grouping.label, grouping.icon, checked = page.preferences.grouping == grouping, onClick = { model.grouping(grouping) })
-    }, { groupingMenu = false }, title = stringResource(R.string.agents_group_by))
     archiveTarget?.let { target ->
         JDialog(onDismiss = { archiveTarget = null }, title = stringResource(R.string.agents_action_archive),
             text = stringResource(R.string.agents_archive_confirm, target.displayTitle),
@@ -826,7 +866,7 @@ private fun AgentsListPlaceholder() {
                 horizontalArrangement = Arrangement.spacedBy(Tokens.Space.m),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Box(Modifier.size(Tokens.Space.xxl).background(fill, shape))
+                Box(Modifier.size(Tokens.Space.Standard.xxl).background(fill, shape))
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(Tokens.Space.xs)) {
                     Box(Modifier.fillMaxWidth(0.48f).height(Tokens.Space.m).background(fill, shape))
                     Box(Modifier.fillMaxWidth(0.68f).height(Tokens.Space.s).background(fill, shape))
@@ -880,7 +920,7 @@ private fun ConnectionNotice(state: ConnectionState, onSettings: () -> Unit) {
         }), status = Status.NeedsYou,
             actionLabel = stringResource(if (state == ConnectionState.NeedsLocalNetworkPermission) R.string.agents_connection_allow else R.string.agents_connection_diagnose),
             onAction = onSettings)
-    } else Text(stringResource(R.string.agents_connection_cached), Modifier.padding(vertical = 8.dp), style = PersonaTheme.type.caption, color = PersonaTheme.palette.ink3)
+    } else Text(stringResource(R.string.agents_connection_cached), Modifier.padding(vertical = 8.dp.dense), style = PersonaTheme.type.caption, color = PersonaTheme.palette.ink3)
 }
 
 @Composable
@@ -895,7 +935,9 @@ internal fun SectionTitle(text: String) { JSectionHeader(text) }
 @Composable
 internal fun SlotRow(
     row: AgentSession, machine: String?, metadata: AgentRowMetadata, now: Instant, compact: Boolean, pinned: Boolean, muted: Boolean,
-    depth: Int, position: GroupPosition, located: Boolean, onOpen: () -> Unit, menuItems: @Composable () -> List<JAction>,
+    depth: Int, position: GroupPosition, located: Boolean, onOpen: () -> Unit,
+    /** What a long press offers; null: nothing (a computer's projects page lists its agents outside any space as iOS does, with no menu). */
+    menuItems: (@Composable () -> List<JAction>)?,
     slotLabel: String? = null, requestCount: Int = 0,
     /** Swiping the row left offers "Close" (iOS); null where the agent cannot be closed from here ([closeSwipe]). */
     onClose: (() -> Unit)? = null,
@@ -931,7 +973,7 @@ internal fun SlotRow(
     JSwipeActions(end = onClose?.let { SwipeAction(stringResource(R.string.agents_close), PhIcons.X, Status.NeedsYou, it, destructive = true) }) {
     AgentRow(
         title = session.displayTitle, status = row.rowStatus(muted), depth = depth, position = position,
-        onClick = onOpen, onLongClick = { menu = true }, compact = compact, muted = muted,
+        onClick = onOpen, onLongClick = menuItems?.let { { menu = true } }, compact = compact, muted = muted,
         selected = isSessionSelected(LocalDetailKey.current, session.key),
         // What its card asks while it needs you, else why its host says it waits or stopped, where its work stands, its last words.
         preview = session.rowLine(card, now, muted)?.text(), time = relativeTime(agentResources(), row.updatedAt, now),
@@ -958,7 +1000,10 @@ internal fun SlotRow(
             session.loop?.let { add(RowFact(it.nextRunLabel(agentResources(), now))) }
             // a running workflow is in background too: counted once (#2935)
             session.backgroundCount.takeIf { it > 0 }?.let { add(RowFact(stringResource(R.string.agents_row_background, it))) }
-            (session.runningSubagents ?: session.subagents?.count { it.running == true })?.takeIf { it > 0 }?.let { add(RowFact(stringResource(R.string.agents_row_subagents, it))) }
+            val childrenWorking = session.children?.working ?: 0
+            maxOf(session.runningSubagents ?: session.subagents.orEmpty().count { it.running }, childrenWorking).takeIf { it > 0 }?.let {
+                add(RowFact(stringResource(if (childrenWorking > 0) R.string.agents_row_children_running else R.string.agents_row_subagents, it)))
+            }
             if (metadata.needsConfirmation) add(RowFact(if (metadata.verifying) PendingStatus.Verifying.localizedLabel else PendingStatus.Unconfirmed.localizedLabel, caution = true))
             if (metadata.pendingCount > 0) add(RowFact(stringResource(R.string.agents_row_queued, metadata.pendingCount), caution = true))
             if (metadata.sending) add(RowFact(PendingStatus.Sending.localizedLabel))
@@ -992,11 +1037,12 @@ internal fun SlotRow(
             RowPlace(CoreText.joined(" · ", content.place).text(), content.model, content.todo, content.muted) else null,
         waiting = row.waitsInBackground && !muted,
         style = style,
+        showPreviewWithMetadata = card?.foldedUnder == session.sessionId,
         // Its running Workflows (#2935) stay structured until the row lays them out beside critical facts (#3435).
         note = WorkflowSummary.lineFields(session, now)?.let { RowNote(it, WorkflowIcon) },
     )
     }
-    if (menu) JActionSheet(menuItems(), { menu = false }, title = session.displayTitle)
+    if (menu && menuItems != null) JActionSheet(menuItems(), { menu = false }, title = session.displayTitle)
 }
 
 /**
@@ -1028,9 +1074,12 @@ internal fun AgentTabEntryRow(
     )
 }
 
-/** Swiping a row left closes the agent (iOS): only a live agent in a terminal pane, while nothing else is being saved. */
+/**
+ * Swiping a row left closes the agent (iOS): only a live agent that closes from here (in a terminal pane, or a runtime's
+ * session whose node says so, #6294), while nothing else is being saved.
+ */
 internal fun closeSwipe(row: AgentSession, busy: Boolean, close: () -> Unit): (() -> Unit)? =
-    close.takeIf { row.session.isLive && row.session.canTerminal && !row.session.assistant && !busy }
+    close.takeIf { row.session.isLive && row.session.canClose && !row.session.assistant && !busy }
 
 /**
  * The session actions are shared by the home list and the space page. A [nested] row, drawn under its parent's
@@ -1065,8 +1114,9 @@ internal fun AgentSessionMenuItems(
             add(JAction(stringResource(R.string.agents_action_link_todo), PhIcons.ListChecks, enabled = !busy, onClick = onLinkTodo))
         }
         onAttach?.let { add(JAction(stringResource(R.string.agents_action_attach), PhIcons.PlugsConnected, enabled = !busy, onClick = it)) }
-        // Renaming changes the terminal tab and Claude's /rename; a session without a terminal has neither.
-        if (session.canTerminal) add(JAction(stringResource(R.string.agents_action_rename), PhIcons.NotePencil, enabled = !busy, onClick = onRename))
+        // Renaming changes the terminal tab and Claude's /rename; a session without a terminal renames where its node says it
+        // can (a runtime's title, #6294).
+        if (session.canRename) add(JAction(stringResource(R.string.agents_action_rename), PhIcons.NotePencil, enabled = !busy, onClick = onRename))
         if (session.loop != null && session.canSend) add(JAction(stringResource(R.string.agents_action_stop_loop), enabled = !busy, onClick = onStopLoop))
         add(JAction(stringResource(R.string.agents_action_handoff), onClick = onHandoff))
         if (row.state == AgentState.Unread) add(JAction(stringResource(R.string.agents_action_mark_read), PhIcons.Check, onClick = onRead))
@@ -1074,7 +1124,8 @@ internal fun AgentSessionMenuItems(
         session.resumeCommand()?.let { command -> add(JAction(stringResource(R.string.agents_action_copy_resume), onClick = { copy(command, null) })) }
         add(JAction(stringResource(R.string.agents_action_copy_directory), enabled = session.cwd.isNotBlank(), onClick = { copy(session.cwd, null) }))
         add(JAction(stringResource(R.string.agents_action_open_session), onClick = onOpen))
-        if (session.isLive && session.canTerminal) add(JAction(stringResource(R.string.agents_action_close_agent), destructive = true, enabled = !busy, onClick = onClose))
+        // Its pane quits, or a runtime's session ends where its node says it can (#6294).
+        if (session.isLive && session.canClose) add(JAction(stringResource(R.string.agents_action_close_agent), destructive = true, enabled = !busy, onClick = onClose))
         if (session.canDelete && onDelete != null) add(JAction(stringResource(R.string.agents_action_delete_chat), destructive = true, enabled = !busy, onClick = onDelete))
     }
 }
@@ -1094,10 +1145,14 @@ internal val RepoLevel.kind: String @Composable get() = stringResource(when (thi
     RepoLevel.MainCheckout -> R.string.agents_repo_main_checkout
     RepoLevel.Worktree -> R.string.agents_repo_worktree
 })
-internal val RepoLevel.icon get() = when (this) {
+/**
+ * The level's leading icon. Non-main worktrees carry none: their name and the extra indentation identify them, as on
+ * the web sidebar; [AgentSpaceHeader] already treats a null icon as no mark.
+ */
+internal val RepoLevel.icon: PhIcon? get() = when (this) {
     RepoLevel.Repository -> PhIcons.Folder
     RepoLevel.MainCheckout -> PhIcons.House
-    RepoLevel.Worktree -> PhIcons.GitBranch
+    RepoLevel.Worktree -> null
 }
 /** The grouping's own icon, as iOS's `DevGrouping.symbol`. */
 private val AgentGrouping.icon: PhIcon get() = when (this) {
@@ -1105,6 +1160,7 @@ private val AgentGrouping.icon: PhIcon get() = when (this) {
     AgentGrouping.MachineSpace, AgentGrouping.Space -> PersonaIcons.space
     AgentGrouping.Todo -> PersonaIcons.todo
     AgentGrouping.Machine -> PersonaIcons.machine
+    AgentGrouping.Direction -> PersonaIcons.pinned
     // iOS draws two state dots (circle.grid.2x1), which no generated glyph shows; a board of columns stands in.
     AgentGrouping.State -> PhIcons.Kanban
 }
@@ -1113,6 +1169,7 @@ private val AgentGrouping.label: String @Composable get() = stringResource(when 
     AgentGrouping.Repo -> R.string.agents_grouping_repo
     AgentGrouping.State -> R.string.agents_grouping_state
     AgentGrouping.Todo -> R.string.agents_grouping_todo
+    AgentGrouping.Direction -> R.string.agents_grouping_direction
     // iOS calls this grouping (computer, space, tab, agent) By Project (#4338 A5); the stored value stays MachineSpace.
     else -> R.string.agents_grouping_project
 })

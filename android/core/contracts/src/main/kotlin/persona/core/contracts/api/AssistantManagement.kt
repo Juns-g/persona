@@ -27,6 +27,25 @@ interface AssistantManagement {
     suspend fun updateConfig(update: AssistantConfigUpdate): AssistantConfig = throw UnsupportedOperationException("Assistant settings unavailable")
     /** The launchers a machine offers (GET /api/v1/machines/{id}/launchers). */
     suspend fun launchers(machineId: String): List<AgentLauncher> = throw UnsupportedOperationException("Assistant settings unavailable")
+    /** Only launchers the hub accepts for a Persona conversation; New Agent keeps using [launchers]. */
+    suspend fun assistantLaunchers(machineId: String): List<AgentLauncher> = launchers(machineId)
+    /** The models of [launcher], null on a hub without the list. */
+    suspend fun launcherModels(machineId: String, launcher: String): LauncherModels? = null
+    /**
+     * [assistantLaunchers] with the rest of the hub's answer: the main chat's default and what can't run Persona chats
+     * there, with why (`GET /api/v1/machines/{id}/launchers?purpose=assistant`): the model panel's providers (#5033, #5055).
+     */
+    suspend fun assistantLauncherList(machineId: String): AssistantLaunchers = AssistantLaunchers(assistantLaunchers(machineId))
+    /**
+     * Keeps [pick] as what the conversation's next messages run on (`PUT /api/v1/assistant/conversations/{id}/model`,
+     * feature `assistant_model_pick`); answers the pick the hub kept. A refusal throws the hub's failure with its words
+     * (409 `launcher_out_of_scope`, `launcher_own_service`, `launcher_missing`, `launcher_other_kind`; 400 for a launcher
+     * that can't run assistant chats).
+     */
+    suspend fun setModelPick(session: SessionKey, pick: persona.core.contracts.ModelPick): persona.core.contracts.ModelPick =
+        throw UnsupportedOperationException("Model pick unavailable")
+    /** The conversation follows the default again (`DELETE …/conversations/{id}/model`): Follow default, Undo pick. */
+    suspend fun clearModelPick(session: SessionKey): Unit = throw UnsupportedOperationException("Model pick unavailable")
     suspend fun endConversation(session: SessionKey)
     /**
      * Compacts an assistant conversation's context now (POST /api/v1/assistant/conversations/{id}/compact, hub feature
@@ -47,6 +66,12 @@ interface AssistantManagement {
      * "Managing its own conversations").
      */
     suspend fun archivedConversations(): List<Session> = throw UnsupportedOperationException("Archived chats unavailable")
+    /**
+     * Chats found by what was said in them (`GET /api/v1/assistant/search?q=&limit=`, hub feature `assistant_search`).
+     * Null when this manager has no such route (404, an older build): the app keeps filtering titles and last messages.
+     */
+    suspend fun searchChats(query: String, limit: Int = 30): AssistantSearchAnswer? =
+        throw UnsupportedOperationException("Assistant search unavailable")
     /**
      * Renames a conversation (POST /api/v1/sessions/{mid}/{sid}/rename with `title`): the hub keeps it as the user's own
      * title, which automatic titles no longer replace (docs/assistant/assistant.md "Chat titles").
@@ -71,6 +96,14 @@ interface AssistantManagement {
      */
     suspend fun newMainConversation(carrySummary: Boolean, expect: String?): NewMainResult =
         throw UnsupportedOperationException("New main chat unavailable")
+    /**
+     * Clears the main conversation's context in place (POST /api/v1/assistant/main/clear, hub feature `assistant_main_clear`,
+     * #5095): the hub stops a turn it is on and puts it away as [newMainConversation] does, carrying nothing over, so the
+     * next message to the main conversation starts a new one. [expect] as there (`main_changed` as [AssistantRefused]).
+     * Answers the conversation put away (empty when there was none).
+     */
+    suspend fun clearMainConversation(expect: String?): String =
+        throw UnsupportedOperationException("Clear context unavailable")
     /** Scheduled tasks (GET /api/v1/assistant/tasks): one table of once / daily / interval tasks, docs/assistant/assistant.md "Scheduled tasks". */
     suspend fun tasks(): List<ScheduledTask>
     /** Creates [task] (no id yet, POST) or saves what the user edits on it (PUT); returns it as the hub has it. */
@@ -104,6 +137,43 @@ interface AssistantManagement {
     suspend fun revokeAlwaysGrant(session: SessionKey, keyHash: String): Boolean =
         throw UnsupportedOperationException("Always-allowed permissions unavailable")
 }
+
+/** One message a chat was found by (`docs/protocol/protocol.md` "Assistant chat search"). `ranges` are UTF-16 `[start, end)` in [snippet]. */
+@Serializable
+data class AssistantSearchHit(
+    @SerialName("item_id") val itemId: String = "",
+    val seq: Int = 0,
+    val role: String = "",
+    val ts: String? = null,
+    val snippet: String = "",
+    val ranges: List<List<Int>> = emptyList(),
+)
+
+/** One chat the manager's search returned. [titleMatch]: the title matched, so the row opens as usual, with no snippet. */
+@Serializable
+data class AssistantSearchResult(
+    @SerialName("session_id") val sessionId: String = "",
+    @SerialName("machine_id") val machineId: String = "",
+    val title: String = "",
+    val main: Boolean = false,
+    val archived: Boolean = false,
+    val origin: String? = null,
+    @SerialName("updated_at") val updatedAt: String? = null,
+    @SerialName("title_match") val titleMatch: Boolean = false,
+    val hits: List<AssistantSearchHit> = emptyList(),
+    @SerialName("more_hits") val moreHits: Int = 0,
+)
+
+@Serializable
+data class AssistantSearchIndexed(val done: Int = 0, val total: Int = 0)
+
+@Serializable
+data class AssistantSearchAnswer(
+    val results: List<AssistantSearchResult> = emptyList(),
+    /** Some chats are not in the index yet, or it could not be searched this time. */
+    val partial: Boolean = false,
+    val indexed: AssistantSearchIndexed? = null,
+)
 
 /** One remembered "Always allow": the tool it covers and when; only the key's hash is stored, not the exact scope. */
 @Serializable

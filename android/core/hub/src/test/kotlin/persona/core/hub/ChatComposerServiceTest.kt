@@ -4,6 +4,9 @@ import persona.core.contracts.HubScope
 import persona.core.contracts.JsonCodec
 import persona.core.contracts.SessionKey
 import persona.core.contracts.api.*
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.jsonObject
@@ -27,6 +30,7 @@ class ChatComposerServiceTest {
             override suspend fun send(request: MessageRequest): MessageTransportResult = error("Unexpected delegate send")
         }
         var attempts = 0
+        val retryResults = mutableListOf<Pair<DeliveryState, MessageTransportResult?>>()
         val service = HttpChatComposerService(scope, transport, request = { path, body, headers ->
             val buffer = Buffer()
             body.writeTo(buffer)
@@ -39,6 +43,13 @@ class ChatComposerServiceTest {
                 val fields = JsonCodec.parseToJsonElement(buffer.readUtf8()).jsonObject
                 assertEquals(headers["X-Persona-Op-Id"], fields["client_msg_id"]!!.jsonPrimitive.content)
                 assertEquals("消息", (fields["text"]!!.jsonPrimitive.content).zhAny())
+                if (headers["X-Persona-Op-Id"] == "overrides") {
+                    assertEquals("runtime", fields["launcher"]?.jsonPrimitive?.content)
+                    assertEquals("model-id", fields["model"]?.jsonPrimitive?.content)
+                    return@HttpChatComposerService Response.Builder()
+                        .request(Request.Builder().url("https://example.com/").build())
+                        .protocol(Protocol.HTTP_1_1).code(200).message("test").body("{}".toResponseBody()).build()
+                }
                 attempts++
                 // The retry goes under a new operation id: the hub would answer "operation" from its first try.
                 assertEquals(attempts == 1, headers["X-Persona-Op-Id"] == "operation")
@@ -52,7 +63,7 @@ class ChatComposerServiceTest {
             }
             Response.Builder().request(Request.Builder().url("https://example.com/").build())
                 .protocol(Protocol.HTTP_1_1).code(code).message("test").body(response.toResponseBody()).build()
-        })
+        }, onRetryDelivery = { _, delivery, _, result -> retryResults += delivery.state to result })
         val file = File.createTempFile("composer-test-", ".txt")
         try {
             file.writeText("abc")
@@ -61,10 +72,16 @@ class ChatComposerServiceTest {
         service.send(MessageRequest(scope, session, "消息", "operation"))
         assertEquals("电脑草稿", (service.deliveries.value["operation"]!!.refusal!!.draft).zhAny())
         assertEquals(DeliveryState.Sent, service.retryRefused("operation", true).state)
+        assertEquals(listOf(
+            DeliveryState.Sending to null,
+            DeliveryState.Sent to MessageTransportResult.Accepted,
+        ), retryResults)
         try {
             service.retryRefused("operation", true)
             fail("A delivered message must not be retried")
         } catch (_: ComposerOperationException) { }
+        assertEquals(MessageTransportResult.Accepted,
+            service.send(MessageRequest(scope, session, "消息", "overrides", launcher = "runtime", model = "model-id")))
         assertEquals(2, attempts)
     }
 
@@ -100,6 +117,78 @@ class ChatComposerServiceTest {
         assertEquals(2, ops.size)
         assertNotEquals(ops[0], ops[1])
         assertEquals(DeliveryState.Sent, service.deliveries.value["operation"]!!.state)
+    }
+
+    @Test fun retryCallbackReportsTheActualDeliveredYesFailure() = runBlocking {
+        val scope = HubScope("test-hub", "generation")
+        val session = SessionKey("machine", "session")
+        val transport = object : MessageTransport {
+            override val readyToSend = MutableStateFlow(true)
+            override val supportsClientOps = false
+            override suspend fun send(request: MessageRequest): MessageTransportResult = error("Unexpected delegate send")
+        }
+        var attempts = 0
+        val callbacks = mutableListOf<Pair<DeliveryState, MessageTransportResult?>>()
+        val service = HttpChatComposerService(scope, transport, request = { _, _, _ ->
+            val (code, body) = if (attempts++ == 0) {
+                409 to """{"error":"draft","code":"input_draft","delivered":"none","draft":"draft","clearable":"draft"}"""
+            } else {
+                500 to """{"error":"HTTP 500","code":"internal","delivered":"yes"}"""
+            }
+            Response.Builder().request(Request.Builder().url("https://example.com/").build())
+                .protocol(Protocol.HTTP_1_1).code(code).message("test").body(body.toResponseBody()).build()
+        }, onRetryDelivery = { _, delivery, _, result -> callbacks += delivery.state to result })
+        service.send(MessageRequest(scope, session, "message", "operation"))
+        assertEquals(DeliveryState.Sent, service.retryRefused("operation", true).state)
+        assertEquals(2, callbacks.size)
+        assertEquals(DeliveryState.Sending to null, callbacks[0])
+        assertEquals(DeliveryState.Sent, callbacks[1].first)
+        val result = callbacks[1].second
+        assertTrue(result is MessageTransportResult.HubError)
+        result as MessageTransportResult.HubError
+        assertEquals("internal", result.code)
+        assertEquals("yes", result.delivered)
+    }
+
+    @Test fun retryCallbackUsesNullForSendingAndCancellation() = runBlocking {
+        val scope = HubScope("test-hub", "generation")
+        val session = SessionKey("machine", "session")
+        val transport = object : MessageTransport {
+            override val readyToSend = MutableStateFlow(true)
+            override val supportsClientOps = false
+            override suspend fun send(request: MessageRequest): MessageTransportResult = error("Unexpected delegate send")
+        }
+        var attempts = 0
+        val retryStarted = CompletableDeferred<Unit>()
+        val responseGate = CompletableDeferred<Unit>()
+        val callbacks = mutableListOf<Pair<DeliveryState, MessageTransportResult?>>()
+        val service = HttpChatComposerService(scope, transport, request = { _, _, _ ->
+            if (attempts++ == 0) {
+                Response.Builder().request(Request.Builder().url("https://example.com/").build())
+                    .protocol(Protocol.HTTP_1_1).code(409).message("test").body(
+                        """{"error":"draft","code":"input_draft","delivered":"none","draft":"draft","clearable":"draft"}"""
+                            .toResponseBody()).build()
+            } else {
+                retryStarted.complete(Unit)
+                responseGate.await()
+                error("cancelled response must not complete")
+            }
+        }, onRetryDelivery = { _, delivery, _, result -> callbacks += delivery.state to result })
+        service.send(MessageRequest(scope, session, "message", "operation"))
+        val retry = async { service.retryRefused("operation", true) }
+        try {
+            retryStarted.await()
+            assertEquals(listOf(DeliveryState.Sending to null), callbacks)
+            retry.cancelAndJoin()
+            assertTrue(retry.isCancelled)
+            assertEquals(listOf(
+                DeliveryState.Sending to null,
+                DeliveryState.Unknown to null,
+            ), callbacks)
+        } finally {
+            responseGate.complete(Unit)
+            retry.cancelAndJoin()
+        }
     }
 
     // An interrupt refused for this request (#4803) keeps the pairing, as every other request does since #4776; only a

@@ -27,7 +27,7 @@ IOS_ONLY_TOOLS = {
     "phone_health_write_sample",
     "phone_calendar_update_event", "phone_calendar_delete_event",
     "phone_contacts_create", "phone_contacts_update",
-    "phone_maps_search_nearby", "phone_maps_navigate",
+    "phone_maps_search_nearby", "phone_maps_navigate", "phone_maps_route",
     # Android has no place search yet (the fixture never had it; --check failed on main before #2281).
     "phone_location_search",
 }
@@ -98,13 +98,31 @@ def schema_property(call):
         if bound:
             prop["minimum" if key == "min" else "maximum"] = int(bound.group(1).replace("_", ""))
     val_m = re.search(r'\bvalues:\s*(\w+)', rest)
-    if val_m:
+    if re.search(r'\bvalues:\s*WorkoutReader\.activities\.keys\.sorted\(\)', rest):
+        prop["enum"] = workout_activity_keys()
+    elif val_m:
         val_name = val_m.group(1)
         if val_name == "metricNames":
-            prop["enum"] = ["steps", "distance", "active_energy", "heart_rate", "resting_heart_rate", "sleep", "weight"]
+            prop["enum"] = ["steps", "distance", "active_energy", "heart_rate", "resting_heart_rate", "sleep", "weight",
+                            "dietary_energy", "protein", "carbs", "fat", "resting_energy"]
         else:
             raise ValueError("enum values are not exported yet: %s" % call)
     return prop
+
+
+def workout_activity_keys():
+    """Sorted keys of WorkoutReader.activities, read from its dictionary literal (WorkoutTool.swift)."""
+    text = open(os.path.join(SOURCES, "WorkoutTool.swift"), encoding="utf-8").read()
+    start = re.search(r'static let activities\b[^=]*=\s*\[', text)
+    if not start:
+        raise ValueError("WorkoutReader.activities not found in WorkoutTool.swift")
+    open_at = start.end() - 1
+    body = text[open_at:matching(text, open_at)]
+    # Each entry is "key": [types]; match anywhere, so several entries on one line are all kept.
+    keys = re.findall(r'"(\w+)"\s*:\s*\[', body)
+    if not keys:
+        raise ValueError("WorkoutReader.activities has no entries the exporter can read")
+    return sorted(keys)
 
 
 def schema_object(call):

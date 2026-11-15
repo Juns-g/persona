@@ -1,5 +1,6 @@
 import type { AgentState, Interaction, Session, SessionCapabilities } from "./types";
 import { formatDate, formatRelative, t } from "../i18n";
+import { sessionAgentName } from "./agent-kind";
 import { usageLimitLabel } from "./usage-limit";
 import { workLine } from "./work";
 import { closeoutLine, closeoutSuffix, shownCloseout } from "./closeout";
@@ -15,12 +16,22 @@ export function sessionCan(s: Session | undefined, operation: keyof SessionCapab
   return s.capabilities?.[operation] === true;
 }
 
+/** Rename (#6294): the node's `capabilities.rename` where it says (a runtime's session, which has no terminal), else as
+ *  before: a row that can send and is the user's own Agent or a Persona conversation (no other source). */
+export function sessionCanRename(s: Session | undefined): boolean {
+  if (!s) return false;
+  const said = s.capabilities?.rename;
+  if (typeof said === "boolean") return said;
+  return sessionCan(s, "send") && (Boolean(s.assistant) || !s.source_kind);
+}
+
 /** A stopped Agent (#4754, docs/integrations/engines.md "Agents run in a terminal"): an Agent of a terminal engine that is
  *  not running. Its row keeps its conversation and its terminal and takes no messages; the one way back is Resume on its
  *  terminal page. Only a node that knows it says so (capabilities read and terminal, no send): an older node's offline
- *  row has no capabilities and keeps today's behavior. */
+ *  row has no capabilities and keeps today's behavior. A Codex thread nothing has open is marked the same way (node
+ *  codex_registry.go, #5521), though its row keeps its Codex history source. */
 export function isStoppedAgent(s: Session | undefined): boolean {
-  if (!s || s.source_kind || s.assistant) return false;
+  if (!s || s.assistant || (s.source_kind && s.source_kind !== "codex_history")) return false;
   if (s.status !== "offline" && s.status !== "interrupted") return false;
   const c = s.capabilities;
   return Boolean(c && c.read === true && c.terminal === true && !c.send);
@@ -39,13 +50,19 @@ export function sourceSubtitle(s?: Session): string {
     // Claude outside Persona's terminals (docs/integrations/claude-integration.md "Claude outside Persona's terminals")
     : s.source_kind === "claude_desktop" ? t("lib-format.source_claude_desktop")
     : s.source_kind === "claude_cli" ? t("lib-format.source_claude_terminal")
-    : s.source_kind === "runtime" ? s.agent_label || s.agent || "runtime" // an agent runtime's session (docs/integrations/runtimes.md): its own name
+    // an agent runtime's session (docs/integrations/runtimes.md): its own name, else its agent's ("Claude Code", a Paseo
+    // provider's), never a raw id (#8142)
+    : s.source_kind === "runtime" ? s.agent_label || sessionAgentName(s)
     : s.source_kind;
   const detail = s.source_kind !== "identity_conflict" && s.agent_name ? ` · ${s.agent_name}` : "";
   return sessionCan(s, "send") ? label + detail : t("lib-format.read_only", { source: label + detail, reason: s.read_only_reason || t("lib-format.read_only_default_reason") });
 }
 
+/** The command that resumes the session in a terminal; none ("") for a runtime's session, which its runtime keeps: a
+ *  Paseo provider such as Grok has no such command, an id of the runtime's making (`paseo-…`) is no Claude session's,
+ *  and a Claude Code conversation Paseo runs would get a second writer (#8142). */
 export function resumeCommand(s: Session): string {
+  if (s.source_kind === "runtime") return "";
   const codex = s.agent === "codex" || s.source_kind === "codex_app_server" || s.source_kind === "codex_history";
   const command = codex ? "codex resume" : s.agent === "traex" ? "traex resume" : "claude --resume";
   const resume = `${command} ${s.source_thread_id || s.session_id}`;
@@ -175,9 +192,13 @@ export function sessionTitle(s: Pick<Session, "title" | "cwd">): string {
   return s.title?.trim() || baseName(s.cwd) || t("lib-format.untitled_session");
 }
 
+// A path from a Windows computer: a drive letter or a UNC share. Only there is a backslash a separator; in any other
+// path it is a character of a name.
+const WINDOWS_PATH = /^[A-Za-z]:[\\/]|^\\\\/;
+
 export function baseName(p?: string): string {
   if (!p) return "";
-  const parts = p.replace(/\/+$/, "").split("/");
+  const parts = (WINDOWS_PATH.test(p) ? p.replace(/\\/g, "/") : p).replace(/\/+$/, "").split("/");
   return parts[parts.length - 1] || p;
 }
 
