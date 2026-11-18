@@ -36,7 +36,20 @@ func newUUID() string {
 // agentType is the agent the user picked for the launcher (claude, codex, traex, omp, pi, cursor, agy); empty: what
 // the launcher runs.
 func (n *Node) start(ctx context.Context, cwd, launcher, prompt, resume, workspaceID, mode, effort, tabName, newID, agentType string, options ...modelExecution) (_ *proto.Session, startErr error) {
+	if proto.IsExternalLauncher(launcher) {
+		return nil, externalRefusal(ctx, "adapter_purpose_unsupported")
+	}
 	execution := executionOption(options)
+	// A start named to a failed start's kept tab holds it from here, sync and async alike: newTab uses it, else it is
+	// kept again when the start returns (startremedy.go).
+	claim, claimErr := n.claimKeptTab(execution.InPane)
+	if claimErr != nil {
+		return nil, claimErr
+	}
+	defer claim.release()
+	if claim != nil {
+		ctx = context.WithValue(ctx, keptClaimKey{}, claim)
+	}
 	// The effort is checked against the agent this start actually dispatches: an explicit agentType wins over the
 	// launcher's name, so a Claude start refuses ultra even on a launcher named codex.
 	kind := agentType
@@ -217,13 +230,13 @@ func (n *Node) start(ctx context.Context, cwd, launcher, prompt, resume, workspa
 		Plugins: n.claudeLoadsPlugins(ctx)}
 	// herdr told it is Claude (hostherdr.go): a launcher that wraps another binary is otherwise not seen as one. The
 	// node's directory in front, the assistant's environment left out (agentenv.go).
-	shells := paneShells(ctx, created)
+	shells := n.startPaneShells(ctx, launch, created)
 	line := n.claudeCommandLine(spec, args+modeFlags(mode, effort)+planThenFlags(mode, planThen), shellQuote)
 	if execution.SecretTicket != "" { // through personad launch --ticket; the spec herdr resumes with keeps none (secretenv.go)
 		line = n.withSecretTicket(line, launcher, execution.SecretTicket, shellQuote)
 	}
 	cmd := withHerdrAgent(typedHerdrAgent(launch, "claude", shells...), line)
-	cmd = n.agentCommand(cmd, shellQuote, shells...)
+	cmd = n.agentStartCommand(cmd, shellQuote, shells...)
 	if cdFirst(ctx) { // a launcher switch in a shell that is not in the conversation's folder (launcher_switch.go)
 		cmd = cdThen(cwd, cmd, shells...)
 	}
@@ -363,6 +376,9 @@ func (n *Node) startTabFailed(ctx context.Context, launch host.Launcher, created
 // checkStart validates a start's arguments and returns the directory (~ expanded, home when empty) and launcher.
 // agentType is the agent the start dispatches (start's kind: an explicit agent_type wins); empty: the launcher's own.
 func (n *Node) checkStart(cwd, launcher, resume, mode, effort, agentType string) (string, string, error) {
+	if proto.IsExternalLauncher(launcher) {
+		return "", "", externalRefusal(context.Background(), "adapter_purpose_unsupported")
+	}
 	if launcher == "" {
 		launcher = "claude"
 	}
@@ -495,8 +511,8 @@ func (n *Node) close(ctx context.Context, id string) error {
 	defer n.state.stopped(id, proto.StopUser)
 	a, ok := n.agent(id)
 	if !ok {
-		if _, mine := n.state.get(id); mine {
-			return nil // already gone
+		if st, mine := n.state.get(id); mine {
+			return n.closeAfterExit(ctx, id, st)
 		}
 		return fmt.Errorf("这个 Agent 不在这台电脑的终端里运行，没法从手机关闭")
 	}

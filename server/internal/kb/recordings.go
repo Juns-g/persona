@@ -160,11 +160,15 @@ type Recording struct {
 	// records, AITitleSummary (or "", from before it was said) once complete, AITitleMinutes from a meeting's minutes,
 	// which the summary never replaces. LiveTitles counts the live title's calls, the last at LiveTitleAt, and
 	// LiveTitleChars is the meeting's text (Chars) its last title was written from.
-	AITitle        string    `json:"ai_title,omitempty"`
-	AITitleFrom    string    `json:"ai_title_from,omitempty"`
-	LiveTitles     int       `json:"live_titles,omitempty"`
-	LiveTitleAt    time.Time `json:"live_title_at,omitzero"`
-	LiveTitleChars int       `json:"live_title_chars,omitempty"`
+	// Renamed is the owner's name given on the web (#8877, RenameRecording), RenamedAt when: it comes before the upload's
+	// title until an upload changes that title (the phone renamed it since), and is not the phone's to replace.
+	Renamed        string     `json:"renamed,omitempty"`
+	RenamedAt      *time.Time `json:"renamed_at,omitempty"`
+	AITitle        string     `json:"ai_title,omitempty"`
+	AITitleFrom    string     `json:"ai_title_from,omitempty"`
+	LiveTitles     int        `json:"live_titles,omitempty"`
+	LiveTitleAt    time.Time  `json:"live_title_at,omitzero"`
+	LiveTitleChars int        `json:"live_title_chars,omitempty"`
 	// SummarizedRev is the revision summary.md was written from (0: none yet). SummarizedFinal: in hub mode, it was
 	// written from the final transcript (the transcription final or failed when it was read): one written from the
 	// live text, also one whose call was still running when the final pass ended, is made again (summaryDue).
@@ -179,11 +183,16 @@ type Recording struct {
 	Attendance       string      `json:"attendance,omitempty"`
 	AttendingSession *SessionRef `json:"attending_session,omitempty"`
 	// Meeting is the overlapping calendar item, matched once per revision (MatchedRev); Items links it ("events/<id>").
-	Meeting      *MeetingRef `json:"meeting,omitempty"`
-	Items        []string    `json:"items,omitempty"`
-	MatchedRev   int64       `json:"matched_rev,omitempty"`
-	MinutesState string      `json:"minutes_state,omitempty"`
-	MinutesAsked bool        `json:"minutes_asked,omitempty"` // the user asked for minutes: a meeting whatever its kind
+	Meeting *MeetingRef `json:"meeting,omitempty"`
+	// ImportedMeeting is the overlapping meeting imported from a connected app (a meetings item), by the same rule
+	// among meetings only (#8872): Meeting's event wins for the minutes, while the lists show this recording and that
+	// meeting as one row. Matched with Meeting, and looked for again until minutesImportWait after the end, as an
+	// imported meeting comes after the call. Items links it too.
+	ImportedMeeting *MeetingRef `json:"imported_meeting,omitempty"`
+	Items           []string    `json:"items,omitempty"`
+	MatchedRev      int64       `json:"matched_rev,omitempty"`
+	MinutesState    string      `json:"minutes_state,omitempty"`
+	MinutesAsked    bool        `json:"minutes_asked,omitempty"` // the user asked for minutes: a meeting whatever its kind
 	// MinutesRev is the revision minutes.json was made from (0: none, or asked to be made again); MinutesVersion counts
 	// the minutes written; MinutesFails the unusable answers for MinutesFailRev (failed after minutesTries), and
 	// MinutesTimeouts its tries that ran out of time, the next not before MinutesRetryAt (minutes_timeout.go).
@@ -408,6 +417,8 @@ func (s *Store) tombstones() map[string]time.Time {
 // item's, the model's, else when it started (NameSource says which).
 func (s *Store) recordingName(r *Recording) string {
 	switch r.NameSource() {
+	case NamedByRename:
+		return r.Renamed
 	case NamedByTitle:
 		return r.Title
 	case NamedByCalendar:
@@ -425,15 +436,18 @@ func (s *Store) recordingName(r *Recording) string {
 // Where a recording's name comes from (RecordingState.NameSource, #8873): an open set, "" when it is named only by
 // when it started (or, an all-day recording, by its day).
 const (
+	NamedByRename   = "renamed"  // the owner's name given on the web (Renamed, #8877)
 	NamedByTitle    = "title"    // the upload's title, not its calendar hint's
 	NamedByCalendar = "calendar" // the phone's calendar hint, or the knowledge base's calendar item it overlaps
 	NamedByModel    = "model"    // AITitle
 )
 
-// NameSource is where r's name comes from: the upload's title (the phone's calendar when it says the same), the
-// phone's calendar hint, the matched calendar item, the model's title, else "".
+// NameSource is where r's name comes from: the owner's name from the web, the upload's title (the phone's calendar when
+// it says the same), the phone's calendar hint, the matched calendar item, the model's title, else "".
 func (r *Recording) NameSource() string {
 	switch {
+	case r.Renamed != "":
+		return NamedByRename
 	case r.Title != "":
 		if r.Calendar != nil && r.Calendar.Title == r.Title {
 			return NamedByCalendar
@@ -649,6 +663,19 @@ func (e *Engine) putRecording(rawID string, u RecordingUpload, now time.Time) (p
 	if r.EndedAt != nil {
 		t := r.EndedAt.UTC()
 		r.EndedAt = &t
+	}
+	// An ended hub-mode meeting is as long as the audio the hub holds when the upload says less (#9587): a phone killed
+	// mid-segment loses the segment it was writing and ends the recording before it, while the hub got that audio.
+	if r.EndedAt != nil && r.HubTranscribed() {
+		if held := e.audioHeldEnd(id); held > r.Duration {
+			r.Duration = held
+			if end := r.StartedAt.Add(time.Duration(held * float64(time.Second))); end.After(*r.EndedAt) {
+				r.EndedAt = &end
+			}
+		}
+	}
+	if r.Renamed != "" && u.Title != r.Title { // the phone renamed it since the web did: the newer name wins (#8877)
+		r.Renamed, r.RenamedAt = "", nil
 	}
 	r.Language, r.Device, r.Title, r.Bookmarks, r.Complete = u.Language, u.Device, u.Title, u.Bookmarks, u.Complete
 	r.Kind, r.Calendar = u.Kind, u.Calendar

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -65,16 +66,17 @@ type fakeHub struct {
 	voice         []assistantwire.VoicePlugin
 	modelExts     []assistantwire.ModelExtension // plugins.models: the extensions granted models (model_rpc.go)
 	needTriage    []string
-	ownModels     bool                       // the test sets hello.Models itself: no fake model
-	devices       []Device                   // devices.list answers these when set (else one per machine with sessions)
-	devicesFull   bool                       // devices.list says its list is complete (a machine not in it was removed)
-	devicesOther  []string                   // devices.list's ids kept out of it (pending, leaving, absorbed)
-	sessions      map[string][]proto.Session // by machine: the machines there are
-	sessionsFail  map[string]int             // by machine: sessions.list fails offline this many more times (then recovers)
-	itemsFail     int                        // session.items fails this many more times (then recovers)
-	items         []proto.Item               // session.items answers this
-	pageTurns     bool                       // and only the last n turns of it to "turns": n, as the node does (else all of it)
-	itemsPage     int                        // > 0: session.items with after_seq pages them by seq, this many a page
+	ownModels     bool                         // the test sets hello.Models itself: no fake model
+	devices       []Device                     // devices.list answers these when set (else one per machine with sessions)
+	devicesFull   bool                         // devices.list says its list is complete (a machine not in it was removed)
+	devicesOther  []string                     // devices.list's ids kept out of it (pending, leaving, absorbed)
+	sessions      map[string][]proto.Session   // by machine: the machines there are
+	sessionsFail  map[string]int               // by machine: sessions.list fails offline this many more times (then recovers)
+	itemsFail     int                          // session.items fails this many more times (then recovers)
+	items         []proto.Item                 // session.items answers this
+	page          func(turns int) []proto.Item // when set, session.items answers with this instead (a real transcript's PageTurns)
+	pageTurns     bool                         // and only the last n turns of it to "turns": n, as the node does (else all of it)
+	itemsPage     int                          // > 0: session.items with after_seq pages them by seq, this many a page
 	calls         []DeviceCall
 	known         map[string]bool  // conversations the nodes have
 	made          int              // conversations started, for the next id
@@ -85,6 +87,7 @@ type fakeHub struct {
 	larkCLI       bool
 	slowSnapshots time.Duration // the connectors' live states come this late (nothing: there are none)
 	liveStates    []any         // the connectors' live states (connectors.snapshots), when they come at once
+	liveDelay     time.Duration // liveStates come this late instead (the ask's deadline still holds)
 	snapshotAsks  int           // connectors.snapshots calls
 	hungChannel   string        // the channel whose program never answers a send (hangChannel)
 	replies       []string      // the model's answers, in turn (the last one again when they run out)
@@ -131,6 +134,7 @@ type fakeHub struct {
 
 	// The hub's other apps as a test answers them (answerApp), and the calls they got.
 	apps     map[string]appAnswer
+	blocking map[string]bool // app methods whose answer runs outside the lock (answerAppBlocking)
 	appCalls []AppCall
 
 	inbox *fakeInbox // the inbox's sources (inbox_fake_test.go); nil: the hub has none
@@ -185,6 +189,9 @@ type fakeHub struct {
 	onList    func(f *fakeHub, machine string)   // runs (under the fake's lock) before a sessions.list is answered, which then sends the list as it left it
 	// onAssistantSend runs (under the fake's lock) when assistant.send arrives, before it is answered
 	onAssistantSend func(f *fakeHub, p map[string]any)
+	// assistantAnswer adds to assistant.send's answer (under the fake's lock): what a node says of a supervision round
+	// (node/assistant_round.go), for example.
+	assistantAnswer func(p map[string]any) map[string]any
 	// doctor is each machine's node.doctor claude-version detail (none: the report has no such check).
 	doctor      map[string]string
 	doctorState map[string]string // each machine's claude-version state ("unanswered": no version came this time)
@@ -388,6 +395,13 @@ func (f *fakeHub) deviceCall(ctx context.Context, p DeviceCall) (json.RawMessage
 		if n, _ := a["turns"].(float64); f.pageTurns && n > 0 {
 			items = lastTurns(items, int(n))
 		}
+		if f.page != nil { // a real transcript pages (transcriptChat)
+			n, _ := a["turns"].(float64)
+			items = f.page(max(int(n), 1))
+			if limit, _ := a["limit"].(float64); limit > 0 && len(items) > int(limit) {
+				items = items[len(items)-int(limit):]
+			}
+		}
 		return json.Marshal(map[string]any{"items": items})
 	case DeviceSessionRename:
 		f.sends = append(f.sends, map[string]any{"rename": a})
@@ -419,6 +433,19 @@ func (f *fakeHub) deviceCall(ctx context.Context, p DeviceCall) (json.RawMessage
 		name, _ := a["name"].(string)
 		return json.Marshal(map[string]any{"agent": launcherAgent(name)})
 	case DeviceLaunchersList:
+		if a["source"] == proto.ExternalLauncherSource {
+			list, ok := f.zshrc[p.Device]
+			if !ok {
+				list = f.launcherList
+			}
+			external := []proto.Launcher{}
+			for _, l := range list {
+				if proto.IsExternalLauncher(l.Name) {
+					external = append(external, l)
+				}
+			}
+			return json.Marshal(launcherListing{Source: proto.ExternalLauncherSource, Launchers: external})
+		}
 		if f.launcherGate != nil {
 			gate := f.launcherGate
 			f.mu.Unlock()
@@ -631,7 +658,11 @@ func (f *fakeHub) deviceCall(ctx context.Context, p DeviceCall) (json.RawMessage
 		if a["resume_only"] == true && !f.known[id] {
 			return nil, fmt.Errorf("conversation %s is gone", id)
 		}
-		return json.Marshal(map[string]any{"session_id": id})
+		out := map[string]any{"session_id": id}
+		if f.assistantAnswer != nil {
+			maps.Copy(out, f.assistantAnswer(a))
+		}
+		return json.Marshal(out)
 	}
 	return json.RawMessage(`{}`), nil
 }
@@ -648,8 +679,15 @@ func (f *fakeHub) AppCall(ctx context.Context, p AppCall) (json.RawMessage, erro
 	if p.AppID == AppConnectors && p.Method == ConnectorsSnapshots {
 		f.mu.Lock()
 		f.snapshotAsks++
-		slow, live := f.slowSnapshots, f.liveStates
+		slow, live, delay := f.slowSnapshots, f.liveStates, f.liveDelay
 		f.mu.Unlock()
+		if slow == 0 && delay > 0 {
+			select {
+			case <-time.After(delay):
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
 		if slow == 0 {
 			if live == nil {
 				live = []any{}
@@ -664,6 +702,16 @@ func (f *fakeHub) AppCall(ctx context.Context, p AppCall) (json.RawMessage, erro
 		}
 	}
 	f.mu.Lock()
+	if key := p.AppID + " " + p.Method; f.blocking[key] {
+		answer := f.apps[key]
+		f.appCalls = append(f.appCalls, p)
+		f.mu.Unlock()
+		out, err := answer(p.Params)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(out)
+	}
 	defer f.mu.Unlock()
 	switch p.AppID + " " + p.Method {
 	case AppConnectors + " " + ConnectorsSignedIn:
@@ -1144,6 +1192,20 @@ func (f *fakeHub) answerApp(app, method string, answer appAnswer) {
 	f.apps[app+" "+method] = answer
 }
 
+// answerAppBlocking is answerApp for an answer that waits on the test (a post held until the test lets it land): it
+// runs outside the fake's lock, so the service's other calls go on meanwhile. Under the lock, a goroutine of a
+// synctest bubble that calls the fake would wait on the mutex, which is not a durable block: the bubble's clock would
+// stop, and a timer the test waits for would never fire (#8924). The answer must not touch the fake's fields.
+func (f *fakeHub) answerAppBlocking(app, method string, answer appAnswer) {
+	f.answerApp(app, method, answer)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.blocking == nil {
+		f.blocking = map[string]bool{}
+	}
+	f.blocking[app+" "+method] = true
+}
+
 // appParams are the params of each call to app's method, in order.
 func (f *fakeHub) appParams(app, method string) []map[string]any {
 	f.mu.Lock()
@@ -1362,16 +1424,27 @@ func (f *fakeHub) fakeModel(t testing.TB) {
 }
 
 // lastTurns is the last n turns of items, as the node pages a transcript (transcript.File.PageTurns): a turn opens
-// with a prompt.
+// with a prompt the node counts (nodePagePrompt), so the page also holds the turns before it that opened with an
+// injected prompt (a scheduled run's, a wake, a supervision prompt). Counting those as turns made the page of a reused
+// scheduled chat hold only the current run, which is how #8874 got past the tests.
 func lastTurns(items []proto.Item, n int) []proto.Item {
 	start := len(items)
 	for seen := 0; start > 0 && seen < n; {
 		start--
-		if it := items[start]; it.Role == "user" && it.Kind == proto.KindText && !it.Queued {
+		if nodePagePrompt(items[start]) {
 			seen++
 		}
 	}
 	return items[start:]
+}
+
+// nodePagePrompt is transcript.pagePrompt (not exported): a user question, not a turn Persona woke. TestLastTurnsPagesLikeTheNode
+// holds the two together on a real transcript.
+func nodePagePrompt(it proto.Item) bool {
+	if it.Role != "user" || it.Kind != proto.KindText || it.Queued || it.Wake || it.Injected != nil {
+		return false
+	}
+	return it.ClientMsgID != "" || it.From != "" || prompts.ParseInjected(it.Text) == nil
 }
 
 // fakeAnswer is how the fake model gives one answer: after delay (a caller that gives up first gets none), stopping for

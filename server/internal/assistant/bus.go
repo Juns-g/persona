@@ -135,7 +135,7 @@ func NewBusHub(o BusOptions) *BusHub {
 					assistantwire.CapabilityMeetingAttendance, assistantwire.CapabilityMeetingConversation, assistantwire.CapabilityMeetingPhotos, assistantwire.CapabilityMeetingLiveView,
 					assistantwire.CapabilityMeetingHighlights, assistantwire.CapabilityMeetingNotes, assistantwire.CapabilityMeetingEcho, assistantwire.CapabilityMeetingTranscription,
 					assistantwire.CapabilityRecordingDay, assistantwire.CapabilityAssistantSearch, assistantwire.CapabilityHTTPBodyStream, assistantwire.CapabilityAssistantStartServiceTier,
-					assistantwire.CapabilityMCPWait, assistantwire.CapabilitySessionsSideFold, devicewire.SharingCapability}}
+					assistantwire.CapabilityMCPWait, assistantwire.CapabilitySessionsSideFold, assistantwire.CapabilityRemoteImages, devicewire.SharingCapability}}
 		},
 		OnHello: b.onHello,
 		// A node's tool call that its caller stopped waiting for ends at the hub too (fleet_tools.go).
@@ -615,6 +615,15 @@ func (b *BusHub) request(ctx context.Context, method string, params json.RawMess
 			return nil, err
 		}
 		return s.askHub(ctx, p.Interaction)
+	case assistantwire.MethodFleetAskPrepared:
+		var p struct {
+			Interaction proto.Interaction `json:"interaction"`
+			Replacement string            `json:"replacement"`
+		}
+		if err := decode(&p); err != nil {
+			return nil, err
+		}
+		return b.askPreparedHub(ctx, p.Interaction, p.Replacement)
 	}
 	if out, ok, err := s.kbRequest(ctx, method, params); ok { // the knowledge base's (kb_bus.go)
 		return out, err
@@ -640,7 +649,31 @@ func (b *BusHub) request(ctx context.Context, method string, params json.RawMess
 		return out, err
 	}
 	if d := b.opts.Devices; d != nil {
+		if method == devicewire.MethodCall {
+			var p devicewire.NodeCall
+			if err := json.Unmarshal(params, &p); err != nil {
+				return nil, err
+			}
+			if conversationWrite(p.Method) {
+				s.conversationWrites.RLock()
+				defer s.conversationWrites.RUnlock()
+			}
+			if p.Method != "session.unwatch" {
+				if err := s.conversationParamsAvailable(ctx, d.Canonical(p.MachineID), p.Params); err != nil {
+					return nil, err
+				}
+			}
+		}
 		if out, ok, err := d.Request(ctx, method, params); ok { // devices.* (devices.go)
+			if err == nil && method == devicewire.MethodCall {
+				var p devicewire.NodeCall
+				_ = json.Unmarshal(params, &p)
+				if p.Method != "session.unwatch" {
+					if err := s.conversationParamsAvailable(ctx, d.Canonical(p.MachineID), p.Params); err != nil {
+						return nil, err
+					}
+				}
+			}
 			if err == nil && method == devicewire.MethodCall {
 				s.nodeCallDone(ctx, params) // an effort set on a conversation with a model pick (model_pick.go)
 			}
@@ -662,6 +695,9 @@ func serveHTTP(ctx context.Context, s http.Handler, p assistantwire.HTTPRequest,
 	}
 	if p.ShareAuthority != nil {
 		ctx = devicewire.WithShareAuthority(ctx, *p.ShareAuthority)
+	}
+	if p.OwnerAnswer {
+		ctx = devicewire.WithOwnerAnswer(ctx)
 	}
 	if p.HandoffApprover != nil { // set by the hub only, never from a header (secret_handoff.go there)
 		ctx = assistantwire.WithHandoffApprover(ctx, *p.HandoffApprover)
@@ -767,11 +803,11 @@ func (b *BusHub) event(ctx context.Context, ev busEvent) error {
 	decode := func(v any) error { return json.Unmarshal(ev.params, v) }
 	switch ev.name {
 	case assistantwire.EventUserSpoke:
-		var p SessionRef
+		var p assistantwire.UserSpokeParams
 		if err := decode(&p); err != nil {
 			return err
 		}
-		s.UserSpoke(ctx, p)
+		s.userSpokeText(ctx, p.SessionRef, p.Text)
 	case assistantwire.EventUserStopped:
 		var p SessionRef
 		if err := decode(&p); err != nil {

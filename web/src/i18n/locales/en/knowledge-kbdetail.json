@@ -139,7 +139,6 @@
   "room_ended": "The meeting is over.",
   "room_ended_copy": "The meeting is over. A copy of its conversation is still on the assistant’s computer and is deleted once that computer can be reached.",
   "room_deleted": "The meeting’s conversation was deleted with its transcript.",
-  "thread_joined": "Persona joined the meeting",
   "thread_lines_one": "{count} line from the meeting",
   "thread_lines_other": "{count} lines from the meeting",
   "thread_ended": "The meeting ended",
@@ -223,5 +222,12 @@
   "recap_refresh_failed": "Couldn’t load the latest recap. Refresh before trying again: {error}",
   "recap_kept_until": "The transcript has expired. This recap is kept until {date}.",
   "recap_transcript_expired": "The transcript has expired. Only this recap is kept.",
-  "recap_kept_forever": "The transcript has expired. This recap is kept until you delete it."
+  "recap_kept_forever": "The transcript has expired. This recap is kept until you delete it.",
+  "rename": "Rename",
+  "rename_title": "Rename",
+  "rename_placeholder": "Name it automatically",
+  "rename_hint": "Leave it empty to name it automatically. A new name from the iPhone replaces this one.",
+  "renamed": "Renamed",
+  "rename_cleared": "Named automatically again",
+  "rename_failed": "Couldn't rename: {error}"
 }
